@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -35,6 +37,41 @@ def get_session() -> Session:
     if _SessionLocal is None:
         _SessionLocal = sessionmaker(bind=get_engine())
     return _SessionLocal()
+
+
+@contextmanager
+def session_scope():
+    """Provide a transactional scope around a series of operations.
+
+    Creates a session, yields it, commits on success, rolls back on exception,
+    and always closes the session.
+    """
+    session = get_session()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+@contextmanager
+def readonly_session():
+    """Provide a read-only session scope (no commit).
+
+    Creates a session, yields it for read operations, rolls back on exception,
+    and always closes the session without committing.
+    """
+    session = get_session()
+    try:
+        yield session
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 def checkpoint():
@@ -109,6 +146,35 @@ def _migrate():
             conn.execute("UPDATE triggers SET move_to=?, action='move' WHERE rule_id=?", (move_to, rule_id))
         # Convert delete/move actions to manage
         conn.execute("UPDATE rules SET action='manage' WHERE action IN ('delete', 'move')")
+
+    # Maintenance runs table (Fix #8)
+    if "maintenance_runs" not in tables:
+        conn.execute("""CREATE TABLE maintenance_runs (
+            id INTEGER PRIMARY KEY,
+            started_at DATETIME NOT NULL,
+            completed_at DATETIME,
+            status VARCHAR NOT NULL,
+            error TEXT,
+            summary TEXT
+        )""")
+
+    # Move states table (Fix #4)
+    if "move_states" not in tables:
+        conn.execute("""CREATE TABLE move_states (
+            id INTEGER PRIMARY KEY,
+            started_at DATETIME NOT NULL,
+            media_title VARCHAR NOT NULL,
+            plex_rating_key VARCHAR NOT NULL,
+            source_manager VARCHAR NOT NULL,
+            source_path VARCHAR NOT NULL,
+            dest_manager VARCHAR NOT NULL,
+            dest_path VARCHAR NOT NULL,
+            status VARCHAR NOT NULL,
+            error TEXT
+        )""")
+
+    # PendingAction notification_sent column (Fix #9)
+    _add_col("pending_actions", "notification_sent", "BOOLEAN", "0")
 
     conn.commit()
     conn.close()

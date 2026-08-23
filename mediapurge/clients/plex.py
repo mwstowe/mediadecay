@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from functools import lru_cache
+import threading
 import time
 
 from plexapi.server import PlexServer
@@ -37,16 +38,18 @@ def _timed_lru_cache(seconds=300, maxsize=128):
 
 _plex_server = None
 _plex_server_time = 0
+_plex_server_lock = threading.Lock()
 
 
 def _server() -> PlexServer:
     global _plex_server, _plex_server_time
     now = time.time()
-    if _plex_server is None or (now - _plex_server_time) > 600:
-        cfg = get_config()["plex"]
-        _plex_server = PlexServer(cfg["url"], cfg["token"])
-        _plex_server_time = now
-    return _plex_server
+    with _plex_server_lock:
+        if _plex_server is None or (now - _plex_server_time) > 600:
+            cfg = get_config()["plex"]
+            _plex_server = PlexServer(cfg["url"], cfg["token"])
+            _plex_server_time = now
+        return _plex_server
 
 
 def get_users() -> list[dict]:

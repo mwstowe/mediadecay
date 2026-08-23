@@ -44,19 +44,41 @@ def _run_maintenance():
     from mediapurge.config import get_config
     from mediapurge.engine import (
         execute_deletions, process_pending_actions, run_evaluation, sync_managed_media,
-        maintenance_lock,
+        maintenance_lock, check_incomplete_moves,
     )
     from mediapurge.engine import execute_moves, cleanup_orphaned_rules, activate_pending_rules
     from mediapurge import notify
+    from mediapurge.db import session_scope
+    from mediapurge.models import MaintenanceRun
+    from datetime import timezone
 
     if not maintenance_lock.acquire(blocking=False):
         log.warning("Scheduled maintenance skipped — another maintenance run is in progress")
         return
+
+    # Record maintenance start
+    run_id = None
+    try:
+        with session_scope() as session:
+            run = MaintenanceRun(
+                started_at=datetime.now(timezone.utc),
+                status="running",
+            )
+            session.add(run)
+            session.flush()
+            run_id = run.id
+    except Exception:
+        pass
+
     try:
         cfg = get_config()
         dry_run = cfg.get("maintenance", {}).get("dry_run", True)
 
         log.info(f"Scheduled maintenance starting (dry_run={dry_run})")
+
+        # Check for incomplete moves from previous crash
+        check_incomplete_moves()
+
         sync_managed_media()
         activated = activate_pending_rules()
         report = run_evaluation(dry_run=dry_run)
@@ -123,11 +145,31 @@ def _run_maintenance():
         summary = "\n".join(lines)
         log.info(summary)
 
+        # Record successful completion
+        if run_id:
+            with session_scope() as session:
+                run = session.get(MaintenanceRun, run_id)
+                if run:
+                    run.completed_at = datetime.now(timezone.utc)
+                    run.status = "completed"
+                    run.summary = summary[:4000]
+
         # Only send email if there's something to report
         if deletions or moves or pending or orphaned_rules or expired_deletions or activated or report.errors:
             notify.send("MediaPurge Maintenance", summary)
     except Exception as e:
         log.error(f"Maintenance failed: {e}")
+        # Record failure
+        if run_id:
+            try:
+                with session_scope() as session:
+                    run = session.get(MaintenanceRun, run_id)
+                    if run:
+                        run.completed_at = datetime.now(timezone.utc)
+                        run.status = "failed"
+                        run.error = str(e)
+            except Exception:
+                pass
     finally:
         # Force WAL checkpoint so data persists to main DB file
         try:

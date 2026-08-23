@@ -68,6 +68,7 @@ class PendingAction(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
     cancelled: Mapped[bool] = mapped_column(Boolean, default=False)
+    notification_sent: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class ActionLog(Base):
@@ -95,3 +96,31 @@ class ManagedMedia(Base):
     manager_id: Mapped[str | None] = mapped_column(String, nullable=True)
     file_path: Mapped[str | None] = mapped_column(String, nullable=True)
     last_synced: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+class MaintenanceRun(Base):
+    """Records maintenance run status and results."""
+    __tablename__ = "maintenance_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False)  # running/completed/failed
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class MoveState(Base):
+    """Tracks in-progress moves for crash recovery."""
+    __tablename__ = "move_states"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    media_title: Mapped[str] = mapped_column(String, nullable=False)
+    plex_rating_key: Mapped[str] = mapped_column(String, nullable=False)
+    source_manager: Mapped[str] = mapped_column(String, nullable=False)
+    source_path: Mapped[str] = mapped_column(String, nullable=False)
+    dest_manager: Mapped[str] = mapped_column(String, nullable=False)
+    dest_path: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)  # moving_files/adding_dest/removing_source/completed/failed
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)

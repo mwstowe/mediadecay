@@ -96,6 +96,13 @@ def main():
     # Step 6: Notify
     notify.send("MediaPurge Report", summary)
 
+    # Step 7: Checkpoint WAL to ensure all data is flushed to main DB
+    try:
+        from mediapurge.db import checkpoint
+        checkpoint()
+    except Exception as e:
+        log.warning(f"WAL checkpoint failed: {e}")
+
     log.info("Maintenance complete.")
 
 

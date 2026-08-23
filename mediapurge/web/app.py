@@ -1,5 +1,7 @@
 import functools
+import logging
 import os
+import threading
 
 import bcrypt
 from flask import Flask, flash, redirect, render_template, request, session, url_for
@@ -12,6 +14,8 @@ from mediapurge.clients import sonarr, radarr, medusa
 
 from sqlalchemy import select, desc
 from sqlalchemy.orm import joinedload
+
+log = logging.getLogger(__name__)
 
 
 def create_app() -> Flask:
@@ -288,7 +292,6 @@ def create_app() -> Flask:
         return redirect(url_for("rules_list"))
 
     _orphan_task = {"running": False, "results": None}
-    import threading
     from mediapurge.engine import maintenance_lock
     _orphan_lock = threading.Lock()
 
@@ -497,58 +500,78 @@ def create_app() -> Flask:
     @app.route("/browse/<library>/<int:rating_key>/delete", methods=["POST"])
     @login_required
     def browse_delete(library, rating_key):
-        """Immediately delete an item from its manager."""
+        """Immediately delete an item from its manager (runs in background)."""
         from mediapurge.clients import plex as plex_client
         from mediapurge.engine import find_manager, _delete_direct, EvalResult
         server = plex_client._server()
-        item = server.fetchItem(rating_key)
-        manager, manager_id = find_manager(item)
-        result = EvalResult(title=item.title, rating_key=str(rating_key), action="delete",
-                            manager=manager, manager_id=manager_id)
         try:
-            if manager == "sonarr":
-                sonarr.delete_series(int(manager_id), delete_files=True)
-            elif manager == "radarr":
-                radarr.delete_movie(int(manager_id), delete_files=True)
-            elif manager == "medusa":
-                medusa.delete_show(str(manager_id), remove_files=True)
-            else:
-                _delete_direct(result)
-            db = get_session()
-            db.add(ActionLog(media_title=item.title, plex_rating_key=str(rating_key),
-                             action_taken="delete", details="immediate from browse"))
-            # Purge any rules targeting this item
-            for r in db.query(Rule).filter(Rule.plex_rating_key == str(rating_key)).all():
-                db.delete(r)
-            db.commit()
-            db.close()
+            item = server.fetchItem(rating_key)
         except Exception as e:
-            flash(f"Operation failed: {e}", "error")
+            flash(f"Item not found: {e}", "error")
+            return redirect(url_for("browse_library", library=library))
+        manager, manager_id = find_manager(item)
+        title = item.title
+
+        def _do_delete():
+            result = EvalResult(title=title, rating_key=str(rating_key), action="delete",
+                                manager=manager, manager_id=manager_id)
+            try:
+                if manager == "sonarr":
+                    sonarr.delete_series(int(manager_id), delete_files=True)
+                elif manager == "radarr":
+                    radarr.delete_movie(int(manager_id), delete_files=True)
+                elif manager == "medusa":
+                    medusa.delete_show(str(manager_id), remove_files=True)
+                else:
+                    _delete_direct(result)
+                db = get_session()
+                db.add(ActionLog(media_title=title, plex_rating_key=str(rating_key),
+                                 action_taken="delete", details="immediate from browse"))
+                # Purge any rules targeting this item
+                for r in db.query(Rule).filter(Rule.plex_rating_key == str(rating_key)).all():
+                    db.delete(r)
+                db.commit()
+                db.close()
+            except Exception as e:
+                log.error(f"Background delete failed for {title}: {e}")
+
+        threading.Thread(target=_do_delete, daemon=True).start()
+        flash(f"Deletion of '{title}' started in background.", "info")
         return redirect(url_for("browse_library", library=library))
 
     @app.route("/browse/<library>/<int:rating_key>/move", methods=["POST"])
     @login_required
     def browse_move(library, rating_key):
-        """Immediately move an item to another location."""
+        """Immediately move an item to another location (runs in background)."""
         from mediapurge.clients import plex as plex_client
         from mediapurge.engine import find_manager, _do_move, EvalResult
         dest = request.form.get("move_to", "")
         if not dest:
             return redirect(url_for("browse_item", library=library, rating_key=rating_key))
         server = plex_client._server()
-        item = server.fetchItem(rating_key)
-        manager, manager_id = find_manager(item)
-        result = EvalResult(title=item.title, rating_key=str(rating_key), action="move",
-                            manager=manager, manager_id=manager_id, move_to=dest)
         try:
-            _do_move(result, dest)
-            db = get_session()
-            db.add(ActionLog(media_title=item.title, plex_rating_key=str(rating_key),
-                             action_taken="move", details=f"immediate move to {dest}"))
-            db.commit()
-            db.close()
+            item = server.fetchItem(rating_key)
         except Exception as e:
-            flash(f"Operation failed: {e}", "error")
+            flash(f"Item not found: {e}", "error")
+            return redirect(url_for("browse_library", library=library))
+        manager, manager_id = find_manager(item)
+        title = item.title
+
+        def _do_bg_move():
+            result = EvalResult(title=title, rating_key=str(rating_key), action="move",
+                                manager=manager, manager_id=manager_id, move_to=dest)
+            try:
+                _do_move(result, dest)
+                db = get_session()
+                db.add(ActionLog(media_title=title, plex_rating_key=str(rating_key),
+                                 action_taken="move", details=f"immediate move to {dest}"))
+                db.commit()
+                db.close()
+            except Exception as e:
+                log.error(f"Background move failed for {title}: {e}")
+
+        threading.Thread(target=_do_bg_move, daemon=True).start()
+        flash(f"Move of '{title}' started in background.", "info")
         return redirect(url_for("browse_library", library=library))
 
     @app.route("/browse/wanted")
@@ -892,28 +915,28 @@ def create_app() -> Flask:
                 results[name] = {"ok": False, "detail": str(e)}
         return render_template("config.html", config_yaml=None, test_results=results)
 
-    @app.route("/confirm/snooze/<token>")
+    @app.route("/confirm/snooze/<token>", methods=["GET", "POST"])
     def confirm_snooze(token):
         from mediapurge.engine import cancel_pending_by_token
         if cancel_pending_by_token(token, "snooze"):
             return render_template("confirm.html", success=True)
         return render_template("confirm.html", success=False)
 
-    @app.route("/confirm/disable/<token>")
+    @app.route("/confirm/disable/<token>", methods=["GET", "POST"])
     def confirm_disable(token):
         from mediapurge.engine import cancel_pending_by_token
         if cancel_pending_by_token(token, "disable"):
             return render_template("confirm.html", success=True)
         return render_template("confirm.html", success=False)
 
-    @app.route("/confirm/unwatched/<token>")
+    @app.route("/confirm/unwatched/<token>", methods=["GET", "POST"])
     def confirm_unwatched(token):
         from mediapurge.engine import cancel_pending_by_token
         if cancel_pending_by_token(token, "unwatched"):
             return render_template("confirm.html", success=True)
         return render_template("confirm.html", success=False)
 
-    @app.route("/confirm/keep/<token>")
+    @app.route("/confirm/keep/<token>", methods=["GET", "POST"])
     def confirm_keep(token):
         """Legacy URL — treat as snooze."""
         from mediapurge.engine import cancel_pending_by_token
@@ -935,7 +958,9 @@ def main():
     key = cfg["web"].get("ssl_key")
     if cert and key:
         ssl_ctx = (cert, key)
-    app.run(host="0.0.0.0", port=cfg["web"].get("port", 9393), ssl_context=ssl_ctx)
+    # NOTE: For production deployments, use a WSGI server like gunicorn or waitress instead:
+    #   gunicorn -w 1 --threads 4 -b 0.0.0.0:9393 'mediapurge.web.app:create_app()'
+    app.run(host="0.0.0.0", port=cfg["web"].get("port", 9393), ssl_context=ssl_ctx, threaded=True)
 
 
 if __name__ == "__main__":

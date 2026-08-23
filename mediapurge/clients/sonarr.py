@@ -1,10 +1,32 @@
 import time
+import threading
 
 import requests
 
 from mediapurge.config import get_config
 
+DEFAULT_TIMEOUT = (10, 30)
+
 _cache = {"series": None, "series_time": 0}
+_cache_lock = threading.Lock()
+
+
+def _request_with_retry(method, url, retries=2, **kwargs):
+    """Retry on ConnectionError, Timeout, or 502/503/504 with 2-second backoff."""
+    kwargs.setdefault("timeout", DEFAULT_TIMEOUT)
+    last_exc = None
+    for attempt in range(1 + retries):
+        try:
+            r = method(url, **kwargs)
+            if r.status_code in (502, 503, 504) and attempt < retries:
+                time.sleep(2)
+                continue
+            return r
+        except (requests.ConnectionError, requests.Timeout) as e:
+            last_exc = e
+            if attempt < retries:
+                time.sleep(2)
+    raise last_exc
 
 
 def _base() -> tuple[str, dict]:
@@ -14,19 +36,22 @@ def _base() -> tuple[str, dict]:
 
 def get_all_series() -> list[dict]:
     now = time.time()
-    if _cache["series"] is not None and (now - _cache["series_time"]) < 60:
-        return _cache["series"]
+    with _cache_lock:
+        if _cache["series"] is not None and (now - _cache["series_time"]) < 60:
+            return _cache["series"]
     url, headers = _base()
-    r = requests.get(f"{url}/api/v3/series", headers=headers)
+    r = _request_with_retry(requests.get, f"{url}/api/v3/series", headers=headers)
     r.raise_for_status()
-    _cache["series"] = r.json()
-    _cache["series_time"] = now
-    return _cache["series"]
+    data = r.json()
+    with _cache_lock:
+        _cache["series"] = data
+        _cache["series_time"] = time.time()
+    return data
 
 
 def get_episode_files(series_id: int) -> list[dict]:
     url, headers = _base()
-    r = requests.get(f"{url}/api/v3/episodefile", headers=headers, params={"seriesId": series_id})
+    r = requests.get(f"{url}/api/v3/episodefile", headers=headers, params={"seriesId": series_id}, timeout=DEFAULT_TIMEOUT)
     r.raise_for_status()
     return r.json()
 
@@ -34,7 +59,7 @@ def get_episode_files(series_id: int) -> list[dict]:
 def delete_episode_file(episode_file_id: int):
     """Delete the file — Sonarr automatically unmonitors the episode."""
     url, headers = _base()
-    r = requests.delete(f"{url}/api/v3/episodefile/{episode_file_id}", headers=headers)
+    r = requests.delete(f"{url}/api/v3/episodefile/{episode_file_id}", headers=headers, timeout=DEFAULT_TIMEOUT)
     r.raise_for_status()
 
 
@@ -51,27 +76,29 @@ def delete_series(series_id: int, delete_files: bool = True):
         f"{url}/api/v3/series/{series_id}",
         headers=headers,
         params={"deleteFiles": str(delete_files).lower()},
+        timeout=DEFAULT_TIMEOUT,
     )
     r.raise_for_status()
-    _cache["series"] = None
+    with _cache_lock:
+        _cache["series"] = None
 
 
 def unmonitor_season(series_id: int, season_number: int):
     """Unmonitor a specific season so Sonarr won't re-download it."""
     url, headers = _base()
-    r = requests.get(f"{url}/api/v3/series/{series_id}", headers=headers)
+    r = requests.get(f"{url}/api/v3/series/{series_id}", headers=headers, timeout=DEFAULT_TIMEOUT)
     r.raise_for_status()
     series = r.json()
     for season in series.get("seasons", []):
         if season["seasonNumber"] == season_number:
             season["monitored"] = False
-    r = requests.put(f"{url}/api/v3/series/{series_id}", headers=headers, json=series)
+    r = requests.put(f"{url}/api/v3/series/{series_id}", headers=headers, json=series, timeout=DEFAULT_TIMEOUT)
     r.raise_for_status()
 
 
 def get_episodes(series_id: int) -> list[dict]:
     url, headers = _base()
-    r = requests.get(f"{url}/api/v3/episode", headers=headers, params={"seriesId": series_id})
+    r = requests.get(f"{url}/api/v3/episode", headers=headers, params={"seriesId": series_id}, timeout=DEFAULT_TIMEOUT)
     r.raise_for_status()
     return r.json()
 
@@ -80,13 +107,13 @@ def unmonitor_episodes(episode_ids: list[int]):
     """Unmonitor specific episodes so Sonarr won't re-download them."""
     url, headers = _base()
     r = requests.put(f"{url}/api/v3/episode/monitor", headers=headers,
-                     json={"episodeIds": episode_ids, "monitored": False})
+                     json={"episodeIds": episode_ids, "monitored": False}, timeout=DEFAULT_TIMEOUT)
     r.raise_for_status()
 
 
 def get_root_folders() -> list[str]:
     url, headers = _base()
-    r = requests.get(f"{url}/api/v3/rootfolder", headers=headers)
+    r = requests.get(f"{url}/api/v3/rootfolder", headers=headers, timeout=DEFAULT_TIMEOUT)
     r.raise_for_status()
     return [f["path"] for f in r.json()]
 
@@ -94,14 +121,14 @@ def get_root_folders() -> list[str]:
 def move_series(series_id: int, new_root_folder: str):
     """Move a series to a new root folder."""
     url, headers = _base()
-    r = requests.get(f"{url}/api/v3/series/{series_id}", headers=headers)
+    r = requests.get(f"{url}/api/v3/series/{series_id}", headers=headers, timeout=DEFAULT_TIMEOUT)
     r.raise_for_status()
     series = r.json()
     old_path = series["path"]
     show_folder = old_path.rstrip("/").split("/")[-1]
     series["path"] = f"{new_root_folder.rstrip('/')}/{show_folder}"
     series["rootFolderPath"] = new_root_folder
-    r = requests.put(f"{url}/api/v3/series/{series_id}?moveFiles=true", headers=headers, json=series)
+    r = requests.put(f"{url}/api/v3/series/{series_id}?moveFiles=true", headers=headers, json=series, timeout=DEFAULT_TIMEOUT)
     r.raise_for_status()
 
 
@@ -109,7 +136,7 @@ def add_series(tvdb_id: int, title: str, root_folder: str):
     """Add a series to Sonarr."""
     url, headers = _base()
     # Lookup the series first
-    r = requests.get(f"{url}/api/v3/series/lookup?term=tvdb:{tvdb_id}", headers=headers)
+    r = requests.get(f"{url}/api/v3/series/lookup?term=tvdb:{tvdb_id}", headers=headers, timeout=DEFAULT_TIMEOUT)
     r.raise_for_status()
     results = r.json()
     if not results:
@@ -120,21 +147,20 @@ def add_series(tvdb_id: int, title: str, root_folder: str):
     series["addOptions"] = {"searchForMissingEpisodes": False}
     # Use first available quality profile if not set
     if not series.get("qualityProfileId"):
-        qr = requests.get(f"{url}/api/v3/qualityprofile", headers=headers)
+        qr = requests.get(f"{url}/api/v3/qualityprofile", headers=headers, timeout=DEFAULT_TIMEOUT)
         if qr.status_code == 200 and qr.json():
             series["qualityProfileId"] = qr.json()[0]["id"]
-    r = requests.post(f"{url}/api/v3/series", headers=headers, json=series)
+    r = requests.post(f"{url}/api/v3/series", headers=headers, json=series, timeout=DEFAULT_TIMEOUT)
     r.raise_for_status()
     return r.json()["id"]
 
 
 def command_complete(command_id: int, timeout: int = 60) -> bool:
     """Poll until a Sonarr command completes."""
-    import time
     url, headers = _base()
     deadline = time.time() + timeout
     while time.time() < deadline:
-        r = requests.get(f"{url}/api/v3/command/{command_id}", headers=headers)
+        r = requests.get(f"{url}/api/v3/command/{command_id}", headers=headers, timeout=DEFAULT_TIMEOUT)
         if r.status_code == 200:
             status = r.json().get("status", "")
             if status in ("completed", "failed"):
@@ -147,7 +173,7 @@ def rescan_series(series_id: int) -> int | None:
     """Trigger a disk scan for a series so Sonarr detects existing files. Returns command ID."""
     url, headers = _base()
     r = requests.post(f"{url}/api/v3/command", headers=headers,
-                      json={"name": "RescanSeries", "seriesId": series_id})
+                      json={"name": "RescanSeries", "seriesId": series_id}, timeout=DEFAULT_TIMEOUT)
     r.raise_for_status()
     if r.status_code == 201:
         return r.json().get("id")
@@ -157,11 +183,11 @@ def rescan_series(series_id: int) -> int | None:
 def unmonitor_series(series_id: int):
     """Unmonitor an entire series so Sonarr won't search for anything."""
     url, headers = _base()
-    r = requests.get(f"{url}/api/v3/series/{series_id}", headers=headers)
+    r = requests.get(f"{url}/api/v3/series/{series_id}", headers=headers, timeout=DEFAULT_TIMEOUT)
     r.raise_for_status()
     series = r.json()
     series["monitored"] = False
-    r = requests.put(f"{url}/api/v3/series/{series_id}", headers=headers, json=series)
+    r = requests.put(f"{url}/api/v3/series/{series_id}", headers=headers, json=series, timeout=DEFAULT_TIMEOUT)
     r.raise_for_status()
 
 
@@ -169,7 +195,7 @@ def rename_series(series_id: int) -> int | None:
     """Rename all files in a series to match Sonarr's naming convention. Returns command ID."""
     url, headers = _base()
     r = requests.post(f"{url}/api/v3/command", headers=headers,
-                      json={"name": "RenameSeries", "seriesIds": [series_id]})
+                      json={"name": "RenameSeries", "seriesIds": [series_id]}, timeout=DEFAULT_TIMEOUT)
     r.raise_for_status()
     if r.status_code == 201:
         return r.json().get("id")
@@ -182,7 +208,7 @@ def manual_import(series_id: int, files: list[dict]) -> int | None:
     """
     url, headers = _base()
     r = requests.post(f"{url}/api/v3/command", headers=headers,
-                      json={"name": "ManualImport", "importMode": "auto", "files": files})
+                      json={"name": "ManualImport", "importMode": "auto", "files": files}, timeout=DEFAULT_TIMEOUT)
     r.raise_for_status()
     if r.status_code == 201:
         return r.json().get("id")

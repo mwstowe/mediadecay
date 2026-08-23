@@ -1,30 +1,57 @@
 import time
+import threading
 
 import requests
 
 from mediapurge.config import get_config
 
+DEFAULT_TIMEOUT = (10, 30)
+
 _cache = {"shows": None, "shows_time": 0}
+_cache_lock = threading.Lock()
 
-def _base() -> tuple[str, dict]:
+
+def _request_with_retry(method, url, retries=2, **kwargs):
+    """Retry on ConnectionError, Timeout, or 502/503/504 with 2-second backoff."""
+    kwargs.setdefault("timeout", DEFAULT_TIMEOUT)
+    last_exc = None
+    for attempt in range(1 + retries):
+        try:
+            r = method(url, **kwargs)
+            if r.status_code in (502, 503, 504) and attempt < retries:
+                time.sleep(2)
+                continue
+            return r
+        except (requests.ConnectionError, requests.Timeout) as e:
+            last_exc = e
+            if attempt < retries:
+                time.sleep(2)
+    raise last_exc
+
+
+def _base() -> tuple[str, dict, bool]:
     cfg = get_config()["medusa"]
-    return cfg["url"].rstrip("/"), {"X-Api-Key": cfg["api_key"]}
+    verify_ssl = cfg.get("verify_ssl", False)
+    return cfg["url"].rstrip("/"), {"X-Api-Key": cfg["api_key"]}, verify_ssl
 
 
-def _get(url, headers):
-    return requests.get(url, headers=headers, verify=False)
+def _get(url, headers, verify=False):
+    return requests.get(url, headers=headers, verify=verify, timeout=DEFAULT_TIMEOUT)
 
 
 def get_all_shows() -> list[dict]:
     now = time.time()
-    if _cache["shows"] is not None and (now - _cache["shows_time"]) < 60:
-        return _cache["shows"]
-    url, headers = _base()
-    r = _get(f"{url}/api/v2/series?limit=1000", headers)
+    with _cache_lock:
+        if _cache["shows"] is not None and (now - _cache["shows_time"]) < 60:
+            return _cache["shows"]
+    url, headers, verify = _base()
+    r = _request_with_retry(requests.get, f"{url}/api/v2/series?limit=1000", headers=headers, verify=verify)
     r.raise_for_status()
-    _cache["shows"] = r.json()
-    _cache["shows_time"] = now
-    return _cache["shows"]
+    data = r.json()
+    with _cache_lock:
+        _cache["shows"] = data
+        _cache["shows_time"] = time.time()
+    return data
 
 
 def get_show_by_path(path: str) -> dict | None:
@@ -36,39 +63,43 @@ def get_show_by_path(path: str) -> dict | None:
 
 
 def delete_show(show_slug: str, remove_files: bool = True):
-    url, headers = _base()
+    url, headers, verify = _base()
     r = requests.delete(
         f"{url}/api/v2/series/{show_slug}",
         headers=headers,
         json={"remove": True, "removeFiles": remove_files},
-        verify=False,
+        verify=verify,
+        timeout=DEFAULT_TIMEOUT,
     )
     r.raise_for_status()
-    _cache["shows"] = None
+    with _cache_lock:
+        _cache["shows"] = None
 
 
 def ignore_episode(show_slug: str, season: int, episode: int):
     """Mark an episode as Ignored and clear its quality and release info."""
-    url, headers = _base()
+    url, headers, verify = _base()
     ep_id = f"s{season:02d}e{episode:02d}"
     r = requests.patch(
         f"{url}/api/v2/series/{show_slug}/episodes/{ep_id}",
         headers=headers,
         json={"status": 7, "quality": 0, "release": {"name": ""}},
-        verify=False,
+        verify=verify,
+        timeout=DEFAULT_TIMEOUT,
     )
     r.raise_for_status()
 
 
 def refresh_show(show_slug: str):
     """Trigger a show refresh to clear stale file info."""
-    url, headers = _base()
+    url, headers, verify = _base()
     cfg = get_config()["medusa"]
     # Extract TVDB ID from slug (e.g., "tvdb448176" -> 448176)
     tvdb_id = show_slug.replace("tvdb", "")
     r = requests.get(
         f"{url}/api/v1/{cfg['api_key']}/?cmd=show.refresh&tvdbid={tvdb_id}",
-        verify=False,
+        verify=verify,
+        timeout=DEFAULT_TIMEOUT,
     )
     r.raise_for_status()
 
@@ -87,15 +118,15 @@ def get_root_folders() -> list[str]:
 
 def add_show(tvdb_id: int, location: str, anime: bool = False, show_list: str = None, default_status: str = "Wanted"):
     """Add a show to Medusa, then patch its config (Medusa ignores config at add time)."""
-    import time
-    url, headers = _base()
+    url, headers, verify = _base()
 
     # Step 1: Add the show (Medusa ignores config in POST)
     r = requests.post(
         f"{url}/api/v2/series",
         headers=headers,
         json={"id": {"tvdb": tvdb_id}},
-        verify=False,
+        verify=verify,
+        timeout=DEFAULT_TIMEOUT,
     )
     r.raise_for_status()
 
@@ -103,7 +134,8 @@ def add_show(tvdb_id: int, location: str, anime: bool = False, show_list: str = 
     slug = f"tvdb{tvdb_id}"
     deadline = time.time() + 30
     while time.time() < deadline:
-        _cache["shows"] = None  # bust cache
+        with _cache_lock:
+            _cache["shows"] = None  # bust cache
         try:
             if any(s.get("id", {}).get("slug") == slug for s in get_all_shows()):
                 break
@@ -122,9 +154,9 @@ def add_show(tvdb_id: int, location: str, anime: bool = False, show_list: str = 
         config_patch["config"]["showLists"] = [show_list]
     elif anime:
         config_patch["config"]["showLists"] = ["anime"]
-    requests.patch(f"{url}/api/v2/series/{slug}", headers=headers, json=config_patch, verify=False)
+    requests.patch(f"{url}/api/v2/series/{slug}", headers=headers, json=config_patch, verify=verify, timeout=DEFAULT_TIMEOUT)
     if anime:
-        requests.patch(f"{url}/api/v2/series/{slug}", headers=headers, json={"showType": "anime"}, verify=False)
+        requests.patch(f"{url}/api/v2/series/{slug}", headers=headers, json={"showType": "anime"}, verify=verify, timeout=DEFAULT_TIMEOUT)
 
     # Step 4: Refresh to detect existing files (sets them to Downloaded)
     refresh_show(slug)
@@ -132,7 +164,7 @@ def add_show(tvdb_id: int, location: str, anime: bool = False, show_list: str = 
     deadline = time.time() + 30
     while time.time() < deadline:
         try:
-            ep_r = _get(f"{url}/api/v2/series/{slug}/episodes?limit=1", headers)
+            ep_r = _get(f"{url}/api/v2/series/{slug}/episodes?limit=1", headers, verify=verify)
             if ep_r.status_code == 200 and ep_r.json():
                 break
         except Exception:
@@ -141,7 +173,7 @@ def add_show(tvdb_id: int, location: str, anime: bool = False, show_list: str = 
 
     # Step 5: Unpause and set the real defaultEpisodeStatus for future episodes
     requests.patch(f"{url}/api/v2/series/{slug}", headers=headers,
-                   json={"config": {"defaultEpisodeStatus": default_status, "paused": False}}, verify=False)
+                   json={"config": {"defaultEpisodeStatus": default_status, "paused": False}}, verify=verify, timeout=DEFAULT_TIMEOUT)
 
 
 def get_wanted_shows() -> list[dict]:
