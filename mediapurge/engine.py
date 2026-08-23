@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
 from mediapurge.clients import medusa, plex, radarr, sonarr, ombi
+from plexapi.exceptions import NotFound
 from mediapurge.db import get_session
 from mediapurge.models import ActionLog, ManagedMedia, PendingAction, Rule, Trigger
 from mediapurge import notify
@@ -882,8 +883,10 @@ def cleanup_orphaned_rules():
         try:
             server.fetchItem(int(rule.plex_rating_key))
             continue  # Still in Plex, rule is valid
+        except NotFound:
+            pass  # Definitively not in Plex
         except Exception:
-            pass
+            continue  # Network error or other issue — don't assume orphaned
 
         # Not in Plex — check if still in any manager
         found_in_manager = False
