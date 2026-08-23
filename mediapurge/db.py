@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from mediapurge.config import get_config
@@ -18,12 +18,13 @@ def get_engine():
         cfg = get_config()
         db_path = cfg.get("database", {}).get("path", "mediapurge.db")
         _engine = create_engine(f"sqlite:///{db_path}", echo=False,
-                                connect_args={"timeout": 30})
+                                connect_args={"timeout": 30, "check_same_thread": False})
 
         @event.listens_for(_engine, "connect")
         def set_sqlite_pragma(dbapi_conn, connection_record):
             cursor = dbapi_conn.cursor()
             cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA wal_autocheckpoint=100")
             cursor.close()
 
     return _engine
@@ -34,6 +35,14 @@ def get_session() -> Session:
     if _SessionLocal is None:
         _SessionLocal = sessionmaker(bind=get_engine())
     return _SessionLocal()
+
+
+def checkpoint():
+    """Force a WAL checkpoint — flush all data to the main DB file."""
+    engine = get_engine()
+    with engine.connect() as conn:
+        conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+        conn.commit()
 
 
 def init_db():

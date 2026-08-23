@@ -129,4 +129,10 @@ def _run_maintenance():
     except Exception as e:
         log.error(f"Maintenance failed: {e}")
     finally:
+        # Force WAL checkpoint so data persists to main DB file
+        try:
+            from mediapurge.db import checkpoint
+            checkpoint()
+        except Exception:
+            pass
         maintenance_lock.release()
