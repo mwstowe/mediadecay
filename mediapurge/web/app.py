@@ -23,6 +23,12 @@ def create_app() -> Flask:
     init_db()
     cfg = get_config()
 
+    # Configure logging so background threads can output to stderr/journal
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    )
+
     app = Flask(__name__)
     app.secret_key = cfg["web"]["secret_key"]
 
@@ -513,6 +519,7 @@ def create_app() -> Flask:
         title = item.title
 
         def _do_delete():
+            import traceback
             result = EvalResult(title=title, rating_key=str(rating_key), action="delete",
                                 manager=manager, manager_id=manager_id)
             try:
@@ -524,17 +531,18 @@ def create_app() -> Flask:
                     medusa.delete_show(str(manager_id), remove_files=True)
                 else:
                     _delete_direct(result)
-                db = get_session()
-                db.add(ActionLog(media_title=title, plex_rating_key=str(rating_key),
-                                 action_taken="delete", details="immediate from browse"))
-                # Purge any rules targeting this item
-                for r in db.query(Rule).filter(Rule.plex_rating_key == str(rating_key)).all():
-                    db.delete(r)
-                db.commit()
-                db.close()
+                from mediapurge.db import session_scope
+                with session_scope() as db:
+                    db.add(ActionLog(media_title=title, plex_rating_key=str(rating_key),
+                                     action_taken="delete", details=f"immediate from browse (via {manager})"))
+                    # Purge any rules targeting this item
+                    for r in db.query(Rule).filter(Rule.plex_rating_key == str(rating_key)).all():
+                        db.delete(r)
+                log.info(f"Immediate delete completed: {title} via {manager} (id={manager_id})")
             except Exception as e:
-                log.error(f"Background delete failed for {title}: {e}")
+                log.error(f"Background delete failed for {title}: {e}\n{traceback.format_exc()}")
 
+        log.info(f"Immediate delete requested: {title} — manager={manager}, id={manager_id}")
         threading.Thread(target=_do_delete, daemon=True).start()
         flash(f"Deletion of '{title}' started in background.", "info")
         return redirect(url_for("browse_library", library=library))
@@ -558,17 +566,18 @@ def create_app() -> Flask:
         title = item.title
 
         def _do_bg_move():
+            import traceback
             result = EvalResult(title=title, rating_key=str(rating_key), action="move",
                                 manager=manager, manager_id=manager_id, move_to=dest)
             try:
                 _do_move(result, dest)
-                db = get_session()
-                db.add(ActionLog(media_title=title, plex_rating_key=str(rating_key),
-                                 action_taken="move", details=f"immediate move to {dest}"))
-                db.commit()
-                db.close()
+                from mediapurge.db import session_scope
+                with session_scope() as db:
+                    db.add(ActionLog(media_title=title, plex_rating_key=str(rating_key),
+                                     action_taken="move", details=f"immediate move to {dest}"))
+                log.info(f"Immediate move completed: {title} to {dest}")
             except Exception as e:
-                log.error(f"Background move failed for {title}: {e}")
+                log.error(f"Background move failed for {title}: {e}\n{traceback.format_exc()}")
 
         threading.Thread(target=_do_bg_move, daemon=True).start()
         flash(f"Move of '{title}' started in background.", "info")
