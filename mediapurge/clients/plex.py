@@ -47,7 +47,7 @@ def _server() -> PlexServer:
     with _plex_server_lock:
         if _plex_server is None or (now - _plex_server_time) > 600:
             cfg = get_config()["plex"]
-            _plex_server = PlexServer(cfg["url"], cfg["token"])
+            _plex_server = PlexServer(cfg["url"], cfg["token"], timeout=30)
             _plex_server_time = now
         return _plex_server
 
@@ -147,7 +147,7 @@ def _user_server(token):
     """Get or create a cached PlexServer instance for a user token."""
     if token not in _user_servers:
         cfg = get_config()["plex"]
-        _user_servers[token] = PlexServer(cfg["url"], token)
+        _user_servers[token] = PlexServer(cfg["url"], token, timeout=30)
     return _user_servers[token]
 
 
