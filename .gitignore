@@ -10,3 +10,5 @@ config.yaml
 deploy.sh
 context.json
 ssl/
+# Ignore Kiro directory (settings, local agent state, etc.)
+.kiro/
