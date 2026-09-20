@@ -1,6 +1,6 @@
 # MediaDecay
 
-<p align="center"><img src="MediaDecay.png" alt="MediaDecay" width="200"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/mwstowe/mediadecay/master/MediaDecay.png" alt="MediaDecay" width="200"></p>
 
 Automated media lifecycle management for Plex. Manages deletion and relocation of media across Plex, Sonarr, Radarr, Medusa, and Ombi based on configurable rules.
 
