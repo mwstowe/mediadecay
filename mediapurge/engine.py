@@ -1609,13 +1609,17 @@ def _remove_empty_shows(report: EngineReport):
                             break
                 if not ended:
                     log.info(f"Show empty but ongoing, keeping in {manager}: {rule.media_title}")
-                    session.add(ActionLog(
-                        media_title=rule.media_title or f"rule #{rule.id}",
-                        plex_rating_key=rule.plex_rating_key,
-                        rule_id=rule.id,
-                        action_taken="show_kept_ongoing",
-                        details=f"all episodes removed but show is ongoing in {manager}",
-                    ))
+                    # Only log once — skip if the most recent action for this rule
+                    # was already show_kept_ongoing (avoids redundant entries every run).
+                    last = session.query(ActionLog).filter_by(rule_id=rule.id).order_by(ActionLog.id.desc()).first()
+                    if not (last and last.action_taken == "show_kept_ongoing"):
+                        session.add(ActionLog(
+                            media_title=rule.media_title or f"rule #{rule.id}",
+                            plex_rating_key=rule.plex_rating_key,
+                            rule_id=rule.id,
+                            action_taken="show_kept_ongoing",
+                            details=f"all episodes removed but show is ongoing in {manager}",
+                        ))
                     continue
 
             # Remove from manager
