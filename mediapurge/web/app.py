@@ -1,6 +1,7 @@
 import functools
 import logging
 import os
+import sys
 import threading
 
 import bcrypt
@@ -23,10 +24,18 @@ def create_app() -> Flask:
     init_db()
     cfg = get_config()
 
-    # Configure logging so background threads can output to stderr/journal
+    # Configure logging so background threads can output to journal and the log file
+    log_file = cfg.get("maintenance", {}).get("log_file")
+    handlers = [logging.StreamHandler(sys.stdout)]
+    if log_file:
+        try:
+            handlers.append(logging.FileHandler(log_file))
+        except OSError as e:
+            print(f"Warning: could not open log file {log_file}: {e}", file=sys.stderr)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        handlers=handlers,
     )
 
     app = Flask(__name__)
