@@ -1,6 +1,7 @@
 import functools
 import logging
 import os
+import re
 import sys
 import threading
 
@@ -25,16 +26,27 @@ def create_app() -> Flask:
     cfg = get_config()
 
     # Configure logging so background threads can output to journal and the log file
+    _ansi_re = re.compile(r"\x1b\[[0-9;]*m")
+
+    class _PlainFormatter(logging.Formatter):
+        """Formatter that strips ANSI color codes (e.g. from werkzeug)."""
+
+        def format(self, record):
+            return _ansi_re.sub("", super().format(record))
+
+    log_fmt = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
     log_file = cfg.get("maintenance", {}).get("log_file")
     handlers = [logging.StreamHandler(sys.stdout)]
     if log_file:
         try:
-            handlers.append(logging.FileHandler(log_file))
+            fh = logging.FileHandler(log_file)
+            fh.setFormatter(_PlainFormatter(log_fmt))
+            handlers.append(fh)
         except OSError as e:
             print(f"Warning: could not open log file {log_file}: {e}", file=sys.stderr)
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        format=log_fmt,
         handlers=handlers,
     )
 
