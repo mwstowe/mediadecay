@@ -7,29 +7,30 @@
 <title>{% block title %}MediaDecay{% endblock %}</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #eee; line-height: 1.6; }
-a { color: #4fc3f7; text-decoration: none; }
+body { font-family: system-ui, sans-serif; background: #12333a; color: #eee; line-height: 1.6; }
+a { color: #f6c270; text-decoration: none; }
 a:hover { text-decoration: underline; }
-nav { background: #16213e; padding: 1rem 2rem; display: flex; gap: 2rem; align-items: center; }
+nav { background: #0f2a30; padding: 1rem 2rem; display: flex; gap: 2rem; align-items: center; }
 nav .brand { font-weight: bold; font-size: 1.2rem; color: #fff; }
-nav a { color: #aaa; } nav a:hover { color: #fff; }
+nav a { color: #9fc4cb; } nav a:hover { color: #f6c270; }
 .container { max-width: 1000px; margin: 2rem auto; padding: 0 1rem; }
 table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
-th, td { padding: 0.5rem; text-align: left; border-bottom: 1px solid #333; }
-th { background: #16213e; }
+th, td { padding: 0.5rem; text-align: left; border-bottom: 1px solid #1e4a52; }
+th { background: #0f2a30; }
 .btn { display: inline-block; padding: 0.4rem 1rem; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9rem; color: #fff; }
-.btn-primary { background: #0f3460; } .btn-primary:hover { background: #1a5276; }
+.btn-primary { background: #227885; } .btn-primary:hover { background: #2b93a3; }
+.btn-accent { background: #f6c270; color: #12333a; } .btn-accent:hover { background: #f8ce8a; }
 .btn-danger { background: #922; } .btn-danger:hover { background: #b33; }
 .btn-sm { padding: 0.2rem 0.6rem; font-size: 0.8rem; }
 form label { display: block; margin: 0.5rem 0 0.2rem; font-weight: 500; }
-form input, form select { padding: 0.4rem; background: #222; border: 1px solid #444; color: #eee; border-radius: 4px; width: 100%; max-width: 400px; }
+form input, form select { padding: 0.4rem; background: #0f2a30; border: 1px solid #1e4a52; color: #eee; border-radius: 4px; width: 100%; max-width: 400px; }
 form input[type="checkbox"], form input[type="radio"] { width: auto; }
-.card { background: #16213e; border-radius: 8px; padding: 1.5rem; margin: 1rem 0; }
+.card { background: #16414a; border-radius: 8px; padding: 1.5rem; margin: 1rem 0; }
 .stats { display: flex; gap: 1rem; flex-wrap: wrap; }
-.stat { background: #0f3460; padding: 1rem 1.5rem; border-radius: 8px; text-align: center; }
-.stat .num { font-size: 2rem; font-weight: bold; }
+.stat { background: #227885; padding: 1rem 1.5rem; border-radius: 8px; text-align: center; }
+.stat .num { font-size: 2rem; font-weight: bold; color: #f6c270; }
 .error { color: #f44; }
-.tag-keep { color: #4caf50; } .tag-delete { color: #f44; } .tag-orphan { color: #ff9800; }
+.tag-keep { color: #4caf50; } .tag-delete { color: #f44; } .tag-orphan { color: #f6c270; }
 </style>
 <script>
 document.addEventListener('click', function(e) {
@@ -49,7 +50,7 @@ document.addEventListener('click', function(e) {
   rows.forEach(r => tbody.appendChild(r));
 });
 </script>
-<style>th.sortable { cursor:pointer; } th.sortable:hover { color:#4fc3f7; }</style>
+<style>th.sortable { cursor:pointer; } th.sortable:hover { color:#f6c270; }</style>
 </head>
 <body>
 {% if session.get('authed') %}
@@ -72,7 +73,7 @@ document.addEventListener('click', function(e) {
 {% with messages = get_flashed_messages(with_categories=true) %}
 {% if messages %}
 {% for category, message in messages %}
-<div style="padding:0.75rem;margin-bottom:1rem;border-radius:6px;background:{{ '#922' if category == 'error' else '#0f3460' }};color:#fff;">{{ message }}</div>
+<div style="padding:0.75rem;margin-bottom:1rem;border-radius:6px;background:{{ '#922' if category == 'error' else '#227885' }};color:#fff;">{{ message }}</div>
 {% endfor %}
 {% endif %}
 {% endwith %}
