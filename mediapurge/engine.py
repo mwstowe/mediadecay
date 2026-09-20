@@ -77,6 +77,7 @@ class EngineReport:
     results: list[EvalResult] = field(default_factory=list)
     orphans: list[EvalResult] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    removed_collections: list[str] = field(default_factory=list)
 
 
 def sync_managed_media():
@@ -852,6 +853,19 @@ def execute_deletions(report: EngineReport):
             log.info("Triggered Plex library scan")
         except Exception as e:
             log.warning(f"Failed to trigger Plex scan: {e}")
+
+        # Remove empty collections if configured
+        from mediapurge.config import get_config
+        if get_config().get("maintenance", {}).get("remove_empty_collections", False):
+            try:
+                import time
+                time.sleep(5)  # Let the scan settle so member counts are current
+                removed = plex.remove_empty_collections()
+                if removed:
+                    report.removed_collections = removed
+                    log.info(f"Removed {len(removed)} empty collections")
+            except Exception as e:
+                log.warning(f"Failed to remove empty collections: {e}")
 
 
 def cleanup_orphaned_rules():

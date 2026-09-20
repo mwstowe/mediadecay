@@ -89,6 +89,25 @@ def scan_library(library_name: str):
     _server().library.section(library_name).update()
 
 
+def remove_empty_collections() -> list[str]:
+    """Remove collections with no members across all libraries. Returns removed titles."""
+    removed = []
+    server = _server()
+    for section in server.library.sections():
+        try:
+            for collection in section.collections():
+                try:
+                    if collection.childCount == 0:
+                        title = collection.title
+                        collection.delete()
+                        removed.append(f"{section.title}: {title}")
+                except Exception:
+                    continue
+        except Exception:
+            continue
+    return removed
+
+
 @_timed_lru_cache(seconds=120)
 def _get_system_accounts():
     return {a.id: a.name for a in _server().systemAccounts()}

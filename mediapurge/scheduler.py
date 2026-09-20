@@ -137,6 +137,11 @@ def _run_maintenance():
             for r in activated:
                 lines.append(f"  • {r.media_title} ({r.external_id})")
 
+        if report.removed_collections:
+            lines.append(f"\nEmpty collections removed ({len(report.removed_collections)}):")
+            for c in report.removed_collections:
+                lines.append(f"  • {c}")
+
         if report.errors:
             lines.append(f"\nErrors ({len(report.errors)}):")
             for e in report.errors:
@@ -155,7 +160,7 @@ def _run_maintenance():
                     run.summary = summary[:4000]
 
         # Only send email if there's something to report
-        if deletions or moves or pending or orphaned_rules or expired_deletions or activated or report.errors:
+        if deletions or moves or pending or orphaned_rules or expired_deletions or activated or report.removed_collections or report.errors:
             notify.send("MediaPurge Maintenance", summary)
     except Exception as e:
         log.error(f"Maintenance failed: {e}")

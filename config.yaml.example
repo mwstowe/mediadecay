@@ -50,6 +50,7 @@ maintenance:
   dry_run: true
   schedule: "03:00"
   log_file: /var/log/mediapurge.log
+  remove_empty_collections: true
   excluded_libraries:
     - "3D Movies"
 
