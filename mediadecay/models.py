@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from mediapurge.db import Base
+from mediadecay.db import Base
 
 
 def _utcnow():

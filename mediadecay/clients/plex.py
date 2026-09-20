@@ -5,7 +5,7 @@ import time
 
 from plexapi.server import PlexServer
 
-from mediapurge.config import get_config
+from mediadecay.config import get_config
 
 
 def _to_utc(dt: datetime | None) -> datetime | None:
@@ -116,7 +116,7 @@ def _get_system_accounts():
 @_timed_lru_cache(seconds=300)
 def get_manager_info():
     """Build a lookup of file path -> {managers, ended} from Sonarr, Radarr, Medusa."""
-    from mediapurge.clients import sonarr, radarr, medusa
+    from mediadecay.clients import sonarr, radarr, medusa
     import warnings
     warnings.filterwarnings("ignore")
     info = {}
@@ -317,7 +317,7 @@ def all_episodes_watched_by(show, usernames: list[str]) -> tuple[bool, datetime 
 
 def get_move_destinations() -> list[dict]:
     """Return all known root folders with manager and Plex library info."""
-    from mediapurge.clients import sonarr, radarr, medusa
+    from mediadecay.clients import sonarr, radarr, medusa
     import warnings
     warnings.filterwarnings("ignore")
 

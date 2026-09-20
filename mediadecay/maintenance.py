@@ -4,18 +4,18 @@ import argparse
 import logging
 import sys
 
-from mediapurge.config import load_config, get_config
-from mediapurge.db import init_db
-from mediapurge.engine import EngineReport, execute_deletions, run_evaluation, sync_managed_media, process_pending_actions, get_confirmed_deletions, run_orphan_scan
-from mediapurge import notify
+from mediadecay.config import load_config, get_config
+from mediadecay.db import init_db
+from mediadecay.engine import EngineReport, execute_deletions, run_evaluation, sync_managed_media, process_pending_actions, get_confirmed_deletions, run_orphan_scan
+from mediadecay import notify
 
-log = logging.getLogger("mediapurge")
+log = logging.getLogger("mediadecay")
 
 
 def _format_report(report: EngineReport, dry_run: bool) -> str:
     lines = []
     mode = "DRY RUN" if dry_run else "LIVE"
-    lines.append(f"=== MediaPurge Maintenance [{mode}] ===\n")
+    lines.append(f"=== MediaDecay Maintenance [{mode}] ===\n")
 
     deletions = [r for r in report.results if r.action == "delete"]
     if deletions:
@@ -39,7 +39,7 @@ def _format_report(report: EngineReport, dry_run: bool) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="MediaPurge maintenance job")
+    parser = argparse.ArgumentParser(description="MediaDecay maintenance job")
     parser.add_argument("--dry-run", action="store_true", default=None)
     parser.add_argument("--config", type=str, default=None)
     args = parser.parse_args()
@@ -94,11 +94,11 @@ def main():
     log.info(summary)
 
     # Step 6: Notify
-    notify.send("MediaPurge Report", summary)
+    notify.send("MediaDecay Report", summary)
 
     # Step 7: Checkpoint WAL to ensure all data is flushed to main DB
     try:
-        from mediapurge.db import checkpoint
+        from mediadecay.db import checkpoint
         checkpoint()
     except Exception as e:
         log.warning(f"WAL checkpoint failed: {e}")

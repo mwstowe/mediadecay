@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
-<title>{% block title %}MediaPurge{% endblock %}</title>
+<title>{% block title %}MediaDecay{% endblock %}</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #eee; line-height: 1.6; }
@@ -54,7 +54,7 @@ document.addEventListener('click', function(e) {
 <body>
 {% if session.get('authed') %}
 <div style="position:relative;">
-  <img src="{{ url_for('static', filename='logo.png') }}" alt="MediaPurge" style="position:absolute;left:1rem;top:0;z-index:10;background:#fff;border-radius:8px;padding:2px;height:100px;">
+  <img src="{{ url_for('static', filename='logo.png') }}" alt="MediaDecay" style="position:absolute;left:1rem;top:0;z-index:10;background:#fff;border-radius:8px;padding:2px;height:100px;">
   <nav style="padding-left:180px;">
     <a href="{{ url_for('dashboard') }}">Dashboard</a>
     <a href="{{ url_for('browse') }}">Browse</a>

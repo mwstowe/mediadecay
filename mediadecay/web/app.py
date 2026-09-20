@@ -8,11 +8,11 @@ import threading
 import bcrypt
 from flask import Flask, flash, redirect, render_template, request, session, url_for
 
-from mediapurge.config import get_config, load_config
-from mediapurge.db import get_session, init_db
-from mediapurge.engine import run_evaluation, sync_managed_media
-from mediapurge.models import ActionLog, ManagedMedia, Rule, Trigger
-from mediapurge.clients import sonarr, radarr, medusa
+from mediadecay.config import get_config, load_config
+from mediadecay.db import get_session, init_db
+from mediadecay.engine import run_evaluation, sync_managed_media
+from mediadecay.models import ActionLog, ManagedMedia, Rule, Trigger
+from mediadecay.clients import sonarr, radarr, medusa
 
 from sqlalchemy import select, desc
 from sqlalchemy.orm import joinedload
@@ -133,7 +133,7 @@ def create_app() -> Flask:
         rules = db.execute(select(Rule).options(joinedload(Rule.triggers)).order_by(Rule.scope, Rule.plex_library)).unique().scalars().all()
         db.close()
         # Determine display scope (show vs movie) for show-scoped rules
-        from mediapurge.clients import plex as plex_client
+        from mediadecay.clients import plex as plex_client
         server = None
         for rule in rules:
             if rule.scope == "show" and rule.plex_rating_key:
@@ -208,7 +208,7 @@ def create_app() -> Flask:
             # Capture TVDB/TMDB IDs from Plex for durable identification
             if rule.plex_rating_key:
                 try:
-                    from mediapurge.clients import plex as plex_client
+                    from mediadecay.clients import plex as plex_client
                     server = plex_client._server()
                     item = server.fetchItem(int(rule.plex_rating_key))
                     for guid in getattr(item, "guids", []):
@@ -228,7 +228,7 @@ def create_app() -> Flask:
         rating_key = request.args.get("plex_rating_key")
         if rating_key:
             try:
-                from mediapurge.clients import plex as plex_client
+                from mediadecay.clients import plex as plex_client
                 server = plex_client._server()
                 item = server.fetchItem(int(rating_key))
                 breadcrumb = {"title": item.title, "thumb": item.thumb,
@@ -236,7 +236,7 @@ def create_app() -> Flask:
             except Exception:
                 pass
         try:
-            from mediapurge.clients import plex as plex_client
+            from mediadecay.clients import plex as plex_client
             plex_users = plex_client.get_users()
         except Exception:
             plex_users = []
@@ -292,7 +292,7 @@ def create_app() -> Flask:
 
         db.close()
         try:
-            from mediapurge.clients import plex as plex_client
+            from mediadecay.clients import plex as plex_client
             plex_users = plex_client.get_users()
         except Exception:
             plex_users = []
@@ -311,7 +311,7 @@ def create_app() -> Flask:
         db = get_session()
         rule = db.get(Rule, rule_id)
         if rule:
-            from mediapurge.models import PendingAction
+            from mediadecay.models import PendingAction
             db.query(PendingAction).filter_by(rule_id=rule.id, confirmed=False, cancelled=False).update({"cancelled": True})
             db.delete(rule)
             db.commit()
@@ -319,7 +319,7 @@ def create_app() -> Flask:
         return redirect(url_for("rules_list"))
 
     _orphan_task = {"running": False, "results": None}
-    from mediapurge.engine import maintenance_lock
+    from mediadecay.engine import maintenance_lock
     _orphan_lock = threading.Lock()
 
     @app.route("/orphans")
@@ -333,7 +333,7 @@ def create_app() -> Flask:
                 _orphan_task["running"] = True
                 _orphan_task["results"] = None
             def _scan():
-                from mediapurge.engine import run_orphan_scan
+                from mediadecay.engine import run_orphan_scan
                 try:
                     sync_managed_media()
                     results = run_orphan_scan()
@@ -381,7 +381,7 @@ def create_app() -> Flask:
             sync_managed_media()
             report = run_evaluation(dry_run=dry_run)
             if not dry_run:
-                from mediapurge.engine import execute_deletions, execute_moves, process_pending_actions
+                from mediadecay.engine import execute_deletions, execute_moves, process_pending_actions
                 process_pending_actions()
                 execute_deletions(report)
                 execute_moves(report)
@@ -453,7 +453,7 @@ def create_app() -> Flask:
     @login_required
     def browse():
         """List Plex libraries."""
-        from mediapurge.clients import plex as plex_client
+        from mediadecay.clients import plex as plex_client
         libraries = [(name, ltype) for name, ltype in plex_client.get_libraries() if ltype in ("show", "movie")]
         db = get_session()
         lib_rules_map = {}
@@ -467,7 +467,7 @@ def create_app() -> Flask:
     @login_required
     def browse_library(library):
         """List items in a library."""
-        from mediapurge.clients import plex as plex_client
+        from mediadecay.clients import plex as plex_client
         items = plex_client.get_library_items(library)
         mgr_info = plex_client.get_manager_info()
         items_data = []
@@ -498,7 +498,7 @@ def create_app() -> Flask:
     @login_required
     def browse_item(library, rating_key):
         """Show detail for a specific item."""
-        from mediapurge.clients import plex as plex_client
+        from mediadecay.clients import plex as plex_client
         server = plex_client._server()
         item = server.fetchItem(rating_key)
         children = []
@@ -528,8 +528,8 @@ def create_app() -> Flask:
     @login_required
     def browse_delete(library, rating_key):
         """Immediately delete an item from its manager (runs in background)."""
-        from mediapurge.clients import plex as plex_client
-        from mediapurge.engine import find_manager, _delete_direct, EvalResult
+        from mediadecay.clients import plex as plex_client
+        from mediadecay.engine import find_manager, _delete_direct, EvalResult
         server = plex_client._server()
         try:
             item = server.fetchItem(rating_key)
@@ -552,7 +552,7 @@ def create_app() -> Flask:
                     medusa.delete_show(str(manager_id), remove_files=True)
                 else:
                     _delete_direct(result)
-                from mediapurge.db import session_scope
+                from mediadecay.db import session_scope
                 with session_scope() as db:
                     db.add(ActionLog(media_title=title, plex_rating_key=str(rating_key),
                                      action_taken="delete", details=f"immediate from browse (via {manager})"))
@@ -572,8 +572,8 @@ def create_app() -> Flask:
     @login_required
     def browse_move(library, rating_key):
         """Immediately move an item to another location (runs in background)."""
-        from mediapurge.clients import plex as plex_client
-        from mediapurge.engine import find_manager, _do_move, EvalResult
+        from mediadecay.clients import plex as plex_client
+        from mediadecay.engine import find_manager, _do_move, EvalResult
         dest = request.form.get("move_to", "")
         if not dest:
             return redirect(url_for("browse_item", library=library, rating_key=rating_key))
@@ -592,7 +592,7 @@ def create_app() -> Flask:
                                 manager=manager, manager_id=manager_id, move_to=dest)
             try:
                 _do_move(result, dest)
-                from mediapurge.db import session_scope
+                from mediadecay.db import session_scope
                 with session_scope() as db:
                     db.add(ActionLog(media_title=title, plex_rating_key=str(rating_key),
                                      action_taken="move", details=f"immediate move to {dest}"))
@@ -608,7 +608,7 @@ def create_app() -> Flask:
     @login_required
     def browse_wanted():
         """Show wanted items from managers that don't have rules yet and aren't in Plex."""
-        from mediapurge.clients import plex as plex_client
+        from mediadecay.clients import plex as plex_client
         db = get_session()
         # Get ALL existing rules to exclude items that already have rules
         all_rules = db.execute(select(Rule)).scalars().all()
@@ -717,9 +717,9 @@ def create_app() -> Flask:
     @login_required
     def immediate_delete(rating_key):
         """Immediately delete an item."""
-        from mediapurge.clients import plex as plex_client
-        from mediapurge.engine import find_manager, _delete_direct, EvalResult
-        from mediapurge.clients import sonarr, radarr, medusa
+        from mediadecay.clients import plex as plex_client
+        from mediadecay.engine import find_manager, _delete_direct, EvalResult
+        from mediadecay.clients import sonarr, radarr, medusa
         import warnings; warnings.filterwarnings("ignore")
         server = plex_client._server()
         item = server.fetchItem(rating_key)
@@ -769,8 +769,8 @@ def create_app() -> Flask:
     def immediate_move(rating_key):
         """Immediately move an item."""
         import time
-        from mediapurge.clients import plex as plex_client
-        from mediapurge.engine import find_manager, _do_move, _wait_for, EvalResult
+        from mediadecay.clients import plex as plex_client
+        from mediadecay.engine import find_manager, _do_move, _wait_for, EvalResult
         dest = request.form.get("move_to", "")
         if not dest:
             return redirect(url_for("rules_list"))
@@ -852,7 +852,7 @@ def create_app() -> Flask:
     @login_required
     def config_edit():
         import yaml, re
-        from mediapurge.config import get_config, load_config
+        from mediadecay.config import get_config, load_config
         config_path = os.environ.get("MEDIACLEANER_CONFIG", "config.yaml")
         MASK = "••••••••"
         SENSITIVE_KEYS = ("smtp_pass", "admin_password", "secret_key", "api_key", "token")
@@ -917,9 +917,9 @@ def create_app() -> Flask:
     @app.route("/config/test-email", methods=["POST"])
     @login_required
     def config_test_email():
-        from mediapurge import notify
+        from mediadecay import notify
         try:
-            notify.send("MediaPurge Test", "This is a test email from MediaPurge.")
+            notify.send("MediaDecay Test", "This is a test email from MediaDecay.")
             return redirect(url_for("config_edit") + "?msg=sent")
         except Exception as e:
             return redirect(url_for("config_edit") + f"?msg=fail&err={e}")
@@ -927,7 +927,7 @@ def create_app() -> Flask:
     @app.route("/config/test-connections", methods=["POST"])
     @login_required
     def config_test_connections():
-        from mediapurge.clients import plex as plex_client, sonarr, radarr, medusa, ombi
+        from mediadecay.clients import plex as plex_client, sonarr, radarr, medusa, ombi
         import json
         results = {}
         tests = {
@@ -947,21 +947,21 @@ def create_app() -> Flask:
 
     @app.route("/confirm/snooze/<token>", methods=["GET", "POST"])
     def confirm_snooze(token):
-        from mediapurge.engine import cancel_pending_by_token
+        from mediadecay.engine import cancel_pending_by_token
         if cancel_pending_by_token(token, "snooze"):
             return render_template("confirm.html", success=True)
         return render_template("confirm.html", success=False)
 
     @app.route("/confirm/disable/<token>", methods=["GET", "POST"])
     def confirm_disable(token):
-        from mediapurge.engine import cancel_pending_by_token
+        from mediadecay.engine import cancel_pending_by_token
         if cancel_pending_by_token(token, "disable"):
             return render_template("confirm.html", success=True)
         return render_template("confirm.html", success=False)
 
     @app.route("/confirm/unwatched/<token>", methods=["GET", "POST"])
     def confirm_unwatched(token):
-        from mediapurge.engine import cancel_pending_by_token
+        from mediadecay.engine import cancel_pending_by_token
         if cancel_pending_by_token(token, "unwatched"):
             return render_template("confirm.html", success=True)
         return render_template("confirm.html", success=False)
@@ -969,12 +969,12 @@ def create_app() -> Flask:
     @app.route("/confirm/keep/<token>", methods=["GET", "POST"])
     def confirm_keep(token):
         """Legacy URL — treat as snooze."""
-        from mediapurge.engine import cancel_pending_by_token
+        from mediadecay.engine import cancel_pending_by_token
         if cancel_pending_by_token(token, "snooze"):
             return render_template("confirm.html", success=True)
         return render_template("confirm.html", success=False)
 
-    from mediapurge.scheduler import start_scheduler
+    from mediadecay.scheduler import start_scheduler
     start_scheduler(app)
 
     return app
@@ -989,7 +989,7 @@ def main():
     if cert and key:
         ssl_ctx = (cert, key)
     # NOTE: For production deployments, use a WSGI server like gunicorn or waitress instead:
-    #   gunicorn -w 1 --threads 4 -b 0.0.0.0:9393 'mediapurge.web.app:create_app()'
+    #   gunicorn -w 1 --threads 4 -b 0.0.0.0:9393 'mediadecay.web.app:create_app()'
     app.run(host="0.0.0.0", port=cfg["web"].get("port", 9393), ssl_context=ssl_ctx, threaded=True)
 
 

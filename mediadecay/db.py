@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
-from mediapurge.config import get_config
+from mediadecay.config import get_config
 
 
 class Base(DeclarativeBase):
@@ -18,7 +18,7 @@ def get_engine():
     global _engine
     if _engine is None:
         cfg = get_config()
-        db_path = cfg.get("database", {}).get("path", "mediapurge.db")
+        db_path = cfg.get("database", {}).get("path", "mediadecay.db")
         _engine = create_engine(f"sqlite:///{db_path}", echo=False,
                                 connect_args={"timeout": 30, "check_same_thread": False})
 
@@ -83,7 +83,7 @@ def checkpoint():
 
 
 def init_db():
-    from mediapurge import models  # noqa: F401
+    from mediadecay import models  # noqa: F401
 
     Base.metadata.create_all(get_engine())
     _migrate()
@@ -93,7 +93,7 @@ def _migrate():
     """Add missing columns/tables to existing database."""
     import sqlite3
     cfg = get_config()
-    db_path = cfg.get("database", {}).get("path", "mediapurge.db")
+    db_path = cfg.get("database", {}).get("path", "mediadecay.db")
     conn = sqlite3.connect(db_path)
 
     def _add_col(table, col, coltype, default=None):

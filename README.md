@@ -1,6 +1,6 @@
-# MediaPurge
+# MediaDecay
 
-<p align="center"><img src="MediaPurge.png" alt="MediaPurge" width="200"></p>
+<p align="center"><img src="MediaDecay.png" alt="MediaDecay" width="200"></p>
 
 Automated media lifecycle management for Plex. Manages deletion and relocation of media across Plex, Sonarr, Radarr, Medusa, and Ombi based on configurable rules.
 
@@ -137,7 +137,7 @@ ombi:
 
 #### User Tokens
 
-`user_tokens` provides per-user Plex tokens so MediaPurge can check watch status for individual users. Without a token for a user, it falls back to the admin token — which gives incorrect results.
+`user_tokens` provides per-user Plex tokens so MediaDecay can check watch status for individual users. Without a token for a user, it falls back to the admin token — which gives incorrect results.
 
 The admin/server owner doesn't need an entry — the main `token` is used for them.
 
@@ -157,10 +157,10 @@ for u in s.myPlexAccount().users():
 web:
   secret_key: "RANDOM_SECRET"
   admin_password: "$2b$12$..."  # bcrypt hash
-  base_url: "https://mediapurge.example.com:9393"
+  base_url: "https://mediadecay.example.com:9393"
   port: 9393
-  ssl_cert: /opt/mediapurge/ssl/fullchain.pem
-  ssl_key: /opt/mediapurge/ssl/privkey.pem
+  ssl_cert: /opt/mediadecay/ssl/fullchain.pem
+  ssl_key: /opt/mediadecay/ssl/privkey.pem
 ```
 
 Generate a password hash:
@@ -175,7 +175,7 @@ notifications:
   enabled: true
   method: email
   email:
-    from: mediapurge@example.com
+    from: mediadecay@example.com
     admin: admin@example.com
     smtp_host: smtp.example.com
     smtp_port: 587
@@ -191,7 +191,7 @@ notifications:
 maintenance:
   dry_run: false
   schedule: "03:00"
-  log_file: /var/log/mediapurge.log
+  log_file: /var/log/mediadecay.log
   excluded_libraries:
     - "3D Movies"
 ```
@@ -213,31 +213,31 @@ pip install flask sqlalchemy pyyaml requests bcrypt plexapi
 ### Deploy
 
 ```bash
-sudo mkdir -p /opt/mediapurge
-sudo git clone https://github.com/mwstowe/mediapurge.git /opt/mediapurge
-sudo chown -R sabnzbd:sabnzbd /opt/mediapurge
-cp /opt/mediapurge/config.yaml.example /opt/mediapurge/config.yaml
+sudo mkdir -p /opt/mediadecay
+sudo git clone https://github.com/mwstowe/mediadecay.git /opt/mediadecay
+sudo chown -R sabnzbd:sabnzbd /opt/mediadecay
+cp /opt/mediadecay/config.yaml.example /opt/mediadecay/config.yaml
 # Edit config.yaml with your credentials
 ```
 
 To update:
 ```bash
-cd /opt/mediapurge && sudo -u sabnzbd git pull
-sudo systemctl restart mediapurge
+cd /opt/mediadecay && sudo -u sabnzbd git pull
+sudo systemctl restart mediadecay
 ```
 
-Create the systemd service at `/etc/systemd/system/mediapurge.service`:
+Create the systemd service at `/etc/systemd/system/mediadecay.service`:
 ```ini
 [Unit]
-Description=MediaPurge Web UI
+Description=MediaDecay Web UI
 After=network.target plex-media-server.service
 
 [Service]
 Type=simple
 User=sabnzbd
 Group=sabnzbd
-WorkingDirectory=/opt/mediapurge
-ExecStart=/usr/bin/python3.13 -m mediapurge.web.app
+WorkingDirectory=/opt/mediadecay
+ExecStart=/usr/bin/python3.13 -m mediadecay.web.app
 Restart=on-failure
 
 [Install]
@@ -249,7 +249,7 @@ WantedBy=multi-user.target
 The systemd service runs both the web UI and the scheduled maintenance:
 
 ```bash
-sudo systemctl enable --now mediapurge
+sudo systemctl enable --now mediadecay
 ```
 
 Access the web UI at `https://your-host:9393`.
@@ -260,8 +260,8 @@ From the web UI: **Maintenance** → **Preview (Dry Run)** or **Run Now (Live)**
 
 From the command line:
 ```bash
-sudo -u sabnzbd python3.13 -m mediapurge.maintenance --dry-run
-sudo -u sabnzbd python3.13 -m mediapurge.maintenance
+sudo -u sabnzbd python3.13 -m mediadecay.maintenance --dry-run
+sudo -u sabnzbd python3.13 -m mediadecay.maintenance
 ```
 
 ## Web UI Pages

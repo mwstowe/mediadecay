@@ -2,7 +2,7 @@ import time
 
 import requests
 
-from mediapurge.config import get_config
+from mediadecay.config import get_config
 
 DEFAULT_TIMEOUT = (10, 30)
 

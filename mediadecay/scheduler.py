@@ -15,7 +15,7 @@ def start_scheduler(app):
     if _thread is not None:
         return
 
-    from mediapurge.config import get_config
+    from mediadecay.config import get_config
     cfg = get_config()
     schedule_time = cfg.get("maintenance", {}).get("schedule", "03:00")
 
@@ -41,15 +41,15 @@ def _run_loop(app, schedule_time):
 
 
 def _run_maintenance():
-    from mediapurge.config import get_config
-    from mediapurge.engine import (
+    from mediadecay.config import get_config
+    from mediadecay.engine import (
         execute_deletions, process_pending_actions, run_evaluation, sync_managed_media,
         maintenance_lock, check_incomplete_moves,
     )
-    from mediapurge.engine import execute_moves, cleanup_orphaned_rules, activate_pending_rules
-    from mediapurge import notify
-    from mediapurge.db import session_scope
-    from mediapurge.models import MaintenanceRun
+    from mediadecay.engine import execute_moves, cleanup_orphaned_rules, activate_pending_rules
+    from mediadecay import notify
+    from mediadecay.db import session_scope
+    from mediadecay.models import MaintenanceRun
     from datetime import timezone
 
     if not maintenance_lock.acquire(blocking=False):
@@ -97,7 +97,7 @@ def _run_maintenance():
 
         lines = []
         mode = "DRY RUN" if dry_run else "LIVE"
-        lines.append(f"MediaPurge Maintenance [{mode}]\n")
+        lines.append(f"MediaDecay Maintenance [{mode}]\n")
 
         if deletions:
             def _human(b):
@@ -161,7 +161,7 @@ def _run_maintenance():
 
         # Only send email if there's something to report
         if deletions or moves or pending or orphaned_rules or expired_deletions or activated or report.removed_collections or report.errors:
-            notify.send("MediaPurge Maintenance", summary)
+            notify.send("MediaDecay Maintenance", summary)
     except Exception as e:
         log.error(f"Maintenance failed: {e}")
         # Record failure
@@ -178,7 +178,7 @@ def _run_maintenance():
     finally:
         # Force WAL checkpoint so data persists to main DB file
         try:
-            from mediapurge.db import checkpoint
+            from mediadecay.db import checkpoint
             checkpoint()
         except Exception:
             pass
