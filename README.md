@@ -12,6 +12,7 @@ Automated media lifecycle management for Plex. Manages deletion and relocation o
 - Cleans up associated Ombi requests when media is deleted
 - Auto-approves Ombi requests for media already in Plex (matched by TVDB/IMDB/TMDB ID)
 - Detects orphaned media (exists in Plex but isn't managed by any app)
+- Removes empty Plex collections left behind after their members are deleted (optional)
 - Confirms with users via email before acting, with configurable grace periods and keep methods
 - Provides a web UI for browsing Plex libraries, managing rules, and running maintenance
 - Reports space recovered after maintenance runs
@@ -96,6 +97,7 @@ Safety features:
 - Source show is unmonitored before file moves to prevent redownloads
 - Rollback if the destination manager rejects the show
 - Same-filesystem moves are instant (rename, not copy)
+- Crash recovery: incomplete moves from a previous run (e.g., interrupted by a crash) are detected and reconciled at the start of the next maintenance run
 
 **Note on watch status after moves:** Plex watch status is preserved across moves, but the "last watched" timestamp resets to the time of the move (Plex API limitation). This means any "after watched" triggers in the destination library's rules will start their countdown from when the move happened, not when the media was originally watched.
 
@@ -192,6 +194,7 @@ maintenance:
   dry_run: false
   schedule: "03:00"
   log_file: /var/log/mediadecay.log
+  remove_empty_collections: true   # delete Plex collections that have no members
   excluded_libraries:
     - "3D Movies"
 ```
@@ -230,7 +233,9 @@ Create the systemd service at `/etc/systemd/system/mediadecay.service`:
 ```ini
 [Unit]
 Description=MediaDecay Web UI
-After=network.target plex-media-server.service
+After=network.target plex-media-server.service medusa.service sonarr.service radarr.service ombi.service
+Requires=plex-media-server.service
+Wants=medusa.service sonarr.service radarr.service ombi.service
 
 [Service]
 Type=simple
@@ -239,10 +244,13 @@ Group=sabnzbd
 WorkingDirectory=/opt/mediadecay
 ExecStart=/usr/bin/python3.13 -m mediadecay.web.app
 Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+Adjust the `After`/`Requires`/`Wants` service names to match your system (or drop the ones you don't run).
 
 ## Running
 
@@ -289,4 +297,5 @@ Rules can be created for media that hasn't arrived in Plex yet (e.g., a movie re
 
 - **Rule auto-retirement**: Show-scoped rules are automatically deleted after their target is fully removed
 - **Orphaned rule detection**: Rules whose targets no longer exist in Plex or any manager are cleaned up during maintenance
+- **Empty collection removal**: When `remove_empty_collections` is enabled, Plex collections left with no members (e.g., after all their movies are deleted) are removed during maintenance. Removed collections are listed in the maintenance summary email.
 - **Ombi sync**: Requests for media already in Plex are auto-approved (by TVDB/IMDB/TMDB ID match)
