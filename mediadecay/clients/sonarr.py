@@ -151,6 +151,12 @@ def add_series(tvdb_id: int, title: str, root_folder: str):
         if qr.status_code == 200 and qr.json():
             series["qualityProfileId"] = qr.json()[0]["id"]
     r = requests.post(f"{url}/api/v3/series", headers=headers, json=series, timeout=DEFAULT_TIMEOUT)
+    if r.status_code == 400 and "already" in r.text.lower():
+        # Already in Sonarr — find it by tvdb and return its id
+        existing = requests.get(f"{url}/api/v3/series", headers=headers, timeout=DEFAULT_TIMEOUT).json()
+        for s in existing:
+            if s.get("tvdbId") == tvdb_id:
+                return s["id"]
     r.raise_for_status()
     return r.json()["id"]
 
