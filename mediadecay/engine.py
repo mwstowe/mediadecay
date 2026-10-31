@@ -4,6 +4,7 @@ import json
 import logging
 import secrets
 import threading
+from collections import namedtuple
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -38,16 +39,35 @@ def _wait_for(check_fn, timeout=60, interval=3, desc=""):
 # Shared lock for maintenance operations (used by web UI and scheduler)
 maintenance_lock = threading.Lock()
 
+# Plain, immutable representation of a managed-media row for the cache below.
+_ManagedEntry = namedtuple("_ManagedEntry", ["title", "file_path", "manager", "manager_id"])
+
 _managed_media_cache = None
 _managed_media_lock = threading.Lock()
 
 
 def _get_managed_media_cache():
+    """Return an immutable snapshot of managed media as plain namedtuples.
+
+    We deliberately do NOT cache ORM instances: they would be detached once the
+    session closes (risking DetachedInstanceError) and the shared list would be
+    mutable across the scheduler and web threads. Caching plain tuples makes the
+    shared state immutable and fully detached from the session.
+    """
     global _managed_media_cache
     with _managed_media_lock:
         if _managed_media_cache is None:
             with readonly_session() as session:
-                _managed_media_cache = session.execute(select(ManagedMedia)).scalars().all()
+                rows = session.execute(select(ManagedMedia)).scalars().all()
+                _managed_media_cache = tuple(
+                    _ManagedEntry(
+                        title=r.title,
+                        file_path=r.file_path,
+                        manager=r.manager,
+                        manager_id=r.manager_id,
+                    )
+                    for r in rows
+                )
         return _managed_media_cache
 
 
@@ -1721,8 +1741,9 @@ def _remove_empty_shows(report: EngineReport):
 
 def find_manager_by_rule(rule: Rule):
     """Find the manager for a rule's target by checking managed_media."""
-    with readonly_session() as session:
-        managed = session.execute(select(ManagedMedia)).scalars().all()
+    # Reuse the immutable cache (plain namedtuples) instead of querying ORM rows
+    # and using them after the session closes.
+    managed = _get_managed_media_cache()
     # Try to match by title since the item may no longer be in Plex
     for m in managed:
         if m.title and rule.media_title and m.title.lower() == rule.media_title.lower():
