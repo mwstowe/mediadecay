@@ -24,3 +24,10 @@ mediadecay-maintenance = "mediadecay.maintenance:main"
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint]
+ignore = ["UP017"]  # keep datetime.timezone.utc for consistency with the codebase
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
