@@ -423,7 +423,13 @@ def create_app() -> Flask:
             sync_managed_media()
             report = run_evaluation(dry_run=dry_run)
             if not dry_run:
-                from mediadecay.engine import execute_deletions, execute_moves, process_pending_actions
+                from mediadecay.engine import (
+                    execute_deletions, execute_moves, process_pending_actions,
+                    check_incomplete_moves,
+                )
+                # Surface any moves left incomplete by a prior crash before
+                # starting new destructive work.
+                check_incomplete_moves()
                 process_pending_actions(dry_run=dry_run)
                 execute_deletions(report)
                 execute_moves(report)

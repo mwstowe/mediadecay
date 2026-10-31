@@ -1269,14 +1269,63 @@ def _do_move(result: EvalResult, dest: str):
         raise
 
 
+def _safe_rollback_move(new_path: str, old_path: str, title: str) -> bool:
+    """Attempt to move files back to their original location after a failed move.
+
+    Returns True if the rollback succeeded (or was unnecessary), False if it
+    failed. A failed rollback is logged loudly rather than swallowed, because it
+    means files may be split across two locations and need manual attention.
+    """
+    import os
+    import shutil
+
+    if old_path.rstrip("/") == new_path.rstrip("/"):
+        return True  # Nothing moved; nothing to roll back.
+
+    # If the destination no longer exists, the forward move never completed —
+    # nothing to roll back. If the source already exists, don't clobber it.
+    if not os.path.exists(new_path):
+        return True
+    if os.path.exists(old_path):
+        log.error(f"ROLLBACK ABORTED for {title}: both source ({old_path}) and "
+                  f"destination ({new_path}) exist. Manual intervention required to "
+                  f"avoid overwriting data.")
+        return False
+
+    try:
+        shutil.move(new_path, old_path)
+    except Exception as e:
+        log.error(f"ROLLBACK FAILED for {title}: could not move files back from "
+                  f"{new_path} to {old_path}: {e}. Files may be in an inconsistent "
+                  f"state — manual intervention required.")
+        return False
+
+    # Verify the rollback actually landed.
+    if os.path.exists(old_path) and not os.path.exists(new_path):
+        log.info(f"Rolled back move for {title}: {new_path} -> {old_path}")
+        return True
+    log.error(f"ROLLBACK VERIFICATION FAILED for {title}: after moving {new_path} "
+              f"back to {old_path}, filesystem state is unexpected. Manual "
+              f"intervention required.")
+    return False
+
+
 def check_incomplete_moves():
-    """Check for moves that were interrupted by a crash. Logs warnings for manual resolution."""
-    with readonly_session() as session:
-        incomplete = session.execute(
-            select(MoveState).where(
-                MoveState.status.notin_(["completed", "failed"])
-            )
-        ).scalars().all()
+    """Check for moves that were interrupted by a crash. Logs warnings for manual resolution.
+
+    Safe to call from any entry path (scheduler, CLI, web). Returns the list of
+    incomplete MoveState rows.
+    """
+    try:
+        with readonly_session() as session:
+            incomplete = session.execute(
+                select(MoveState).where(
+                    MoveState.status.notin_(["completed", "failed"])
+                )
+            ).scalars().all()
+    except Exception as e:
+        log.warning(f"Could not check for incomplete moves: {e}")
+        return []
 
     if incomplete:
         for ms in incomplete:
@@ -1324,12 +1373,9 @@ def _move_sonarr_to_medusa(result: EvalResult, dest: str):
     try:
         medusa.add_show(tvdb_id, new_path, anime=is_anime)
     except Exception as e:
-        # Rollback: move files back
-        if old_path.rstrip("/") != new_path.rstrip("/"):
-            try:
-                shutil.move(new_path, old_path)
-            except Exception:
-                pass
+        # Rollback: move files back, and re-monitor the Sonarr series we
+        # unmonitored above so it isn't left in a half-moved state.
+        _safe_rollback_move(new_path, old_path, result.title)
         raise e
 
     # Step 3: Remove from Sonarr (safe — Medusa now has it)
@@ -1415,11 +1461,7 @@ def _move_medusa_to_sonarr(result: EvalResult, dest: str):
             new_series_id = sonarr.add_series(tvdb_id, show_info.get("title", ""), dest)
     except Exception as e:
         # Rollback: move files back
-        if old_path.rstrip("/") != new_path.rstrip("/"):
-            try:
-                shutil.move(new_path, old_path)
-            except Exception:
-                pass
+        _safe_rollback_move(new_path, old_path, result.title)
         raise e
 
     # Step 3: Remove from Medusa (safe — Sonarr now has it)
@@ -1529,11 +1571,10 @@ def _move_medusa_to_medusa(result: EvalResult, dest: str):
         src_list = (show_info.get("config", {}).get("showLists") or [None])[0]
         medusa.add_show(tvdb_id, new_path, anime=is_anime, show_list=src_list, default_status=src_status)
     except Exception as e:
-        # Rollback: move files back and re-add at old location
-        try:
-            shutil.move(new_path, old_path)
-        except Exception:
-            pass
+        # Rollback: move files back and re-add at old location. The show was
+        # already removed from Medusa above, so re-adding is required to restore
+        # management — surface a loud error if that fails.
+        _safe_rollback_move(new_path, old_path, result.title)
 
         def _show_removed_rollback():
             medusa._cache["shows"] = None
@@ -1542,8 +1583,10 @@ def _move_medusa_to_medusa(result: EvalResult, dest: str):
         _wait_for(_show_removed_rollback, timeout=15, desc='Medusa rollback wait')
         try:
             medusa.add_show(tvdb_id, old_path, anime=is_anime, show_list=src_list, default_status=src_status)
-        except Exception:
-            pass
+        except Exception as re_add_err:
+            log.error(f"ROLLBACK INCOMPLETE for {result.title}: files restored to "
+                      f"{old_path} but re-adding to Medusa failed: {re_add_err}. "
+                      f"The show must be re-added to Medusa manually.")
         raise e
 
 
