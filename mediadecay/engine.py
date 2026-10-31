@@ -1896,20 +1896,26 @@ def _send_confirmation_email(rule: Rule, trigger: Trigger | None, title: str, to
     body = "\n".join(lines)
     subject = f"MediaDecay: {title} scheduled for deletion"
     recipient = trigger.confirm_email if trigger and trigger.confirm_email else None
-    if not recipient:
-        # Resolve from watched_by -> user_emails config
-        user_emails = cfg.get("plex", {}).get("user_emails", {})
-        users = [u.strip() for u in rule.watched_by.split(",") if u.strip() != "any"]
-        recipients = [user_emails[u] for u in users if u in user_emails]
-        if recipients:
-            for r in recipients:
-                notify.send_to(subject, body, r)
-            return recipients[0]
-    if recipient:
-        notify.send_to(subject, body, recipient)
-        return recipient
-    else:
-        notify.send(subject, body)
+    try:
+        if not recipient:
+            # Resolve from watched_by -> user_emails config
+            user_emails = cfg.get("plex", {}).get("user_emails", {})
+            users = [u.strip() for u in rule.watched_by.split(",") if u.strip() != "any"]
+            recipients = [user_emails[u] for u in users if u in user_emails]
+            if recipients:
+                for r in recipients:
+                    notify.send_to(subject, body, r)
+                return recipients[0]
+        if recipient:
+            notify.send_to(subject, body, recipient)
+            return recipient
+        else:
+            notify.send(subject, body)
+            return None
+    except Exception as e:
+        # A failed send must NOT be reported as sent, so the caller leaves the
+        # expiry timer unstarted and retries on the next run.
+        log.error(f"Failed to send confirmation email for {title}: {e}")
         return None
 
 
@@ -1923,7 +1929,10 @@ def _send_kept_notification(pa: PendingAction, action_taken: str):
         f"Action taken: {action_taken}\n\n"
         f"The scheduled deletion has been cancelled."
     )
-    notify.send_to(subject, body, pa.notified_to)
+    try:
+        notify.send_to(subject, body, pa.notified_to)
+    except Exception as e:
+        log.warning(f"Failed to send 'kept' notification for {pa.media_title}: {e}")
 
 
 def process_pending_actions(dry_run: bool = False):

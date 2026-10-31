@@ -981,8 +981,17 @@ def create_app() -> Flask:
     @login_required
     def config_test_email():
         from mediadecay import notify
+        from mediadecay.config import get_config
         try:
-            notify.send("MediaDecay Test", "This is a test email from MediaDecay.")
+            ncfg = get_config().get("notifications", {})
+            email_cfg = ncfg.get("email", {})
+            recipient = notify._default_recipient()
+            if not recipient:
+                raise ValueError("No admin email configured (notifications.email.admin)")
+            # Call _send_email directly so delivery failures surface to the UI
+            # (notify.send is best-effort and swallows errors).
+            notify._send_email("MediaDecay Test", "This is a test email from MediaDecay.",
+                               email_cfg, recipient)
             return redirect(url_for("config_edit") + "?msg=sent")
         except Exception as e:
             return redirect(url_for("config_edit") + f"?msg=fail&err={e}")

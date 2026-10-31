@@ -45,6 +45,10 @@ notifications:
     admin: admin@example.com
     smtp_host: smtp.example.com
     smtp_port: 587
+    # TLS mode: starttls (default for 587/25) | ssl (implicit TLS, default for
+    # 465) | none (no encryption — only valid when no credentials are set).
+    # Credentials are never sent over an unencrypted connection.
+    # smtp_tls: starttls
     smtp_user: ""
     smtp_pass: ""
   discord:
