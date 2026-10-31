@@ -1867,8 +1867,12 @@ def _send_kept_notification(pa: PendingAction, action_taken: str):
     notify.send_to(subject, body, pa.notified_to)
 
 
-def process_pending_actions():
-    """Check pending actions: cancel if user intervened, delete if expired. Returns list of deleted titles."""
+def process_pending_actions(dry_run: bool = False):
+    """Check pending actions: cancel if user intervened, delete if expired. Returns list of deleted titles.
+
+    When dry_run is True, expired confirmations are reported but NO deletion is performed
+    and the pending action is left unconfirmed so it will be acted on in a real run.
+    """
     now = datetime.now(timezone.utc)
     expired_deletions = []
 
@@ -1903,14 +1907,16 @@ def process_pending_actions():
                 continue
 
             if now >= pa.expires_at.replace(tzinfo=timezone.utc):
-                pa.confirmed = True
+                if dry_run:
+                    log.info(f"[DRY RUN] Confirmation expired, would delete: {pa.media_title}")
+                    expired_deletions.append(pa.media_title)
+                    # Leave pa unconfirmed so a real run performs the deletion.
+                    continue
+
                 log.info(f"Confirmation expired, executing deletion: {pa.media_title}")
-                session.add(ActionLog(
-                    media_title=pa.media_title, plex_rating_key=pa.plex_rating_key,
-                    rule_id=pa.rule_id, action_taken="confirm_expired_delete",
-                    details=json.dumps({"method": pa.confirm_method}),
-                ))
-                # Execute the deletion now
+                # Execute the deletion first; only mark confirmed and log on success,
+                # so a failed delete is retried on the next run rather than being
+                # recorded as done while the files still exist on disk.
                 try:
                     manager, manager_id = "none", None
                     # Find the manager for this item
@@ -1934,9 +1940,17 @@ def process_pending_actions():
                     else:
                         _delete_direct(result)
                     ombi.cleanup_for_title(pa.media_title)
+                    # Deletion succeeded — now record it as confirmed/handled.
+                    pa.confirmed = True
+                    session.add(ActionLog(
+                        media_title=pa.media_title, plex_rating_key=pa.plex_rating_key,
+                        rule_id=pa.rule_id, action_taken="confirm_expired_delete",
+                        details=json.dumps({"method": pa.confirm_method}),
+                    ))
                     expired_deletions.append(pa.media_title)
                     log.info(f"Deleted after confirmation expired: {pa.media_title}")
                 except Exception as e:
+                    # Leave pa unconfirmed so the deletion is retried next run.
                     log.error(f"Failed to delete {pa.media_title} after confirmation: {e}")
 
     return expired_deletions

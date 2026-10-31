@@ -82,7 +82,7 @@ def _run_maintenance():
         sync_managed_media()
         activated = activate_pending_rules()
         report = run_evaluation(dry_run=dry_run)
-        expired_deletions = process_pending_actions()
+        expired_deletions = process_pending_actions(dry_run=dry_run)
         if not dry_run:
             execute_deletions(report)
             execute_moves(report)

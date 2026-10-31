@@ -82,7 +82,7 @@ def main():
 
     # Step 4: Process pending confirmations (check for cancellation or expiry)
     log.info("Processing pending confirmations...")
-    process_pending_actions()
+    process_pending_actions(dry_run=dry_run)
 
     # Step 5: Execute deletions if not dry run
     if not dry_run:

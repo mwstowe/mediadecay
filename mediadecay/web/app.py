@@ -382,7 +382,7 @@ def create_app() -> Flask:
             report = run_evaluation(dry_run=dry_run)
             if not dry_run:
                 from mediadecay.engine import execute_deletions, execute_moves, process_pending_actions
-                process_pending_actions()
+                process_pending_actions(dry_run=dry_run)
                 execute_deletions(report)
                 execute_moves(report)
             with _task_lock:
@@ -454,7 +454,13 @@ def create_app() -> Flask:
     def browse():
         """List Plex libraries."""
         from mediadecay.clients import plex as plex_client
-        libraries = [(name, ltype) for name, ltype in plex_client.get_libraries() if ltype in ("show", "movie")]
+        try:
+            libraries = [(name, ltype) for name, ltype in plex_client.get_libraries() if ltype in ("show", "movie")]
+        except Exception as e:
+            log.warning(f"browse: could not reach Plex: {e}")
+            flash(f"Could not reach Plex: {e}", "error")
+            return render_template("browse.html", libraries=[], items=None, item=None, children=None,
+                                   lib_rules_map={})
         db = get_session()
         lib_rules_map = {}
         for r in db.query(Rule).filter(Rule.scope == "library", Rule.enabled == True).all():
@@ -468,8 +474,13 @@ def create_app() -> Flask:
     def browse_library(library):
         """List items in a library."""
         from mediadecay.clients import plex as plex_client
-        items = plex_client.get_library_items(library)
-        mgr_info = plex_client.get_manager_info()
+        try:
+            items = plex_client.get_library_items(library)
+            mgr_info = plex_client.get_manager_info()
+        except Exception as e:
+            log.warning(f"browse_library({library}): could not reach Plex: {e}")
+            flash(f"Could not reach Plex: {e}", "error")
+            return redirect(url_for("browse"))
         items_data = []
         for i in items:
             viewed_at = getattr(i, "lastViewedAt", None)
@@ -499,21 +510,26 @@ def create_app() -> Flask:
     def browse_item(library, rating_key):
         """Show detail for a specific item."""
         from mediadecay.clients import plex as plex_client
-        server = plex_client._server()
-        item = server.fetchItem(rating_key)
-        children = []
-        if item.type == "show":
-            for season in item.seasons():
-                for ep in season.episodes():
-                    info = plex_client.get_last_viewed_info(ep)
-                    children.append({
-                        "title": f"S{ep.parentIndex:02d}E{ep.index:02d} - {ep.title}",
-                        "rating_key": ep.ratingKey,
-                        "watched": ep.isWatched,
-                        "thumb": ep.thumb,
-                        "viewed_at": info["viewed_at"].strftime("%Y-%m-%d") if info["viewed_at"] else "—",
-                        "viewed_by": info["viewed_by"] or "—",
-                    })
+        try:
+            server = plex_client._server()
+            item = server.fetchItem(rating_key)
+            children = []
+            if item.type == "show":
+                for season in item.seasons():
+                    for ep in season.episodes():
+                        info = plex_client.get_last_viewed_info(ep)
+                        children.append({
+                            "title": f"S{ep.parentIndex:02d}E{ep.index:02d} - {ep.title}",
+                            "rating_key": ep.ratingKey,
+                            "watched": ep.isWatched,
+                            "thumb": ep.thumb,
+                            "viewed_at": info["viewed_at"].strftime("%Y-%m-%d") if info["viewed_at"] else "—",
+                            "viewed_by": info["viewed_by"] or "—",
+                        })
+        except Exception as e:
+            log.warning(f"browse_item({library}, {rating_key}): could not reach Plex: {e}")
+            flash(f"Could not reach Plex: {e}", "error")
+            return redirect(url_for("browse_library", library=library))
         item_data = {"title": item.title, "rating_key": item.ratingKey, "type": item.type,
                      "year": getattr(item, "year", ""), "thumb": item.thumb}
         try:
