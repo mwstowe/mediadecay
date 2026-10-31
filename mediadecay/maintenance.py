@@ -63,45 +63,52 @@ def main():
 
     log.info("Starting maintenance run (dry_run=%s)", dry_run)
 
-    # Step 1: Sync managed media cache
-    log.info("Syncing managed media cache...")
-    try:
-        sync_managed_media()
-    except Exception as e:
-        log.error(f"Failed to sync managed media: {e}")
-        sys.exit(1)
+    from mediadecay.engine import maintenance_guard
+    with maintenance_guard() as acquired:
+        if not acquired:
+            log.error("Another maintenance run is already in progress "
+                      "(service or CLI). Aborting to avoid concurrent destructive runs.")
+            sys.exit(1)
 
-    # Step 2: Evaluate rules
-    log.info("Evaluating rules...")
-    report = run_evaluation(dry_run=dry_run)
+        # Step 1: Sync managed media cache
+        log.info("Syncing managed media cache...")
+        try:
+            sync_managed_media()
+        except Exception as e:
+            log.error(f"Failed to sync managed media: {e}")
+            sys.exit(1)
 
-    # Step 3: Orphan scan (separate from rules)
-    log.info("Scanning for orphans...")
-    orphans = run_orphan_scan()
-    report.orphans = orphans
+        # Step 2: Evaluate rules
+        log.info("Evaluating rules...")
+        report = run_evaluation(dry_run=dry_run)
 
-    # Step 4: Process pending confirmations (check for cancellation or expiry)
-    log.info("Processing pending confirmations...")
-    process_pending_actions(dry_run=dry_run)
+        # Step 3: Orphan scan (separate from rules)
+        log.info("Scanning for orphans...")
+        orphans = run_orphan_scan()
+        report.orphans = orphans
 
-    # Step 5: Execute deletions if not dry run
-    if not dry_run:
-        log.info("Executing deletions...")
-        execute_deletions(report)
+        # Step 4: Process pending confirmations (check for cancellation or expiry)
+        log.info("Processing pending confirmations...")
+        process_pending_actions(dry_run=dry_run)
 
-    # Step 5: Report
-    summary = _format_report(report, dry_run)
-    log.info(summary)
+        # Step 5: Execute deletions if not dry run
+        if not dry_run:
+            log.info("Executing deletions...")
+            execute_deletions(report)
 
-    # Step 6: Notify
-    notify.send("MediaDecay Report", summary)
+        # Step 6: Report
+        summary = _format_report(report, dry_run)
+        log.info(summary)
 
-    # Step 7: Checkpoint WAL to ensure all data is flushed to main DB
-    try:
-        from mediadecay.db import checkpoint
-        checkpoint()
-    except Exception as e:
-        log.warning(f"WAL checkpoint failed: {e}")
+        # Step 7: Notify
+        notify.send("MediaDecay Report", summary)
+
+        # Step 8: Checkpoint WAL to ensure all data is flushed to main DB
+        try:
+            from mediadecay.db import checkpoint
+            checkpoint()
+        except Exception as e:
+            log.warning(f"WAL checkpoint failed: {e}")
 
     log.info("Maintenance complete.")
 

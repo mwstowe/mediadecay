@@ -385,7 +385,6 @@ def create_app() -> Flask:
         return redirect(url_for("rules_list"))
 
     _orphan_task = {"running": False, "results": None}
-    from mediadecay.engine import maintenance_lock
     _orphan_lock = threading.Lock()
 
     @app.route("/orphans")
@@ -438,7 +437,8 @@ def create_app() -> Flask:
     _task = {"running": False, "report": None, "error": None, "mode": None}
 
     def _run_task(dry_run):
-        if not maintenance_lock.acquire(blocking=False):
+        from mediadecay.engine import acquire_maintenance_lock, release_maintenance_lock
+        if not acquire_maintenance_lock():
             with _task_lock:
                 _task["error"] = "Maintenance already running"
                 _task["running"] = False
@@ -463,7 +463,7 @@ def create_app() -> Flask:
             with _task_lock:
                 _task["error"] = str(e)
         finally:
-            maintenance_lock.release()
+            release_maintenance_lock()
         with _task_lock:
             _task["running"] = False
 

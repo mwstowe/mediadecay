@@ -44,7 +44,7 @@ def _run_maintenance():
     from mediadecay.config import get_config
     from mediadecay.engine import (
         execute_deletions, process_pending_actions, run_evaluation, sync_managed_media,
-        maintenance_lock, check_incomplete_moves,
+        acquire_maintenance_lock, release_maintenance_lock, check_incomplete_moves,
     )
     from mediadecay.engine import execute_moves, cleanup_orphaned_rules, activate_pending_rules
     from mediadecay import notify
@@ -52,7 +52,7 @@ def _run_maintenance():
     from mediadecay.models import MaintenanceRun
     from datetime import timezone
 
-    if not maintenance_lock.acquire(blocking=False):
+    if not acquire_maintenance_lock():
         log.warning("Scheduled maintenance skipped — another maintenance run is in progress")
         return
 
@@ -182,4 +182,4 @@ def _run_maintenance():
             checkpoint()
         except Exception:
             pass
-        maintenance_lock.release()
+        release_maintenance_lock()

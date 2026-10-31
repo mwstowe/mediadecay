@@ -5,6 +5,7 @@ import logging
 import secrets
 import threading
 from collections import namedtuple
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -36,8 +37,82 @@ def _wait_for(check_fn, timeout=60, interval=3, desc=""):
     return False
 
 
-# Shared lock for maintenance operations (used by web UI and scheduler)
+# Shared lock for maintenance operations (used by web UI and scheduler).
+# The threading.Lock guards threads within a single process; the file lock
+# below extends mutual exclusion across processes (CLI vs the service), so a
+# scheduled run, a web-triggered run, and a CLI run cannot run concurrently
+# against the same database and media.
 maintenance_lock = threading.Lock()
+_maintenance_lock_fh = None
+
+
+def _lock_file_path():
+    from mediadecay.config import get_config
+    db_path = get_config().get("database", {}).get("path", "mediadecay.db")
+    return db_path + ".maintenance.lock"
+
+
+def acquire_maintenance_lock() -> bool:
+    """Try to acquire the maintenance lock (process + cross-process).
+
+    Returns True on success, False if another run already holds it. Must be
+    paired with release_maintenance_lock() in a finally block.
+    """
+    global _maintenance_lock_fh
+    import fcntl
+
+    if not maintenance_lock.acquire(blocking=False):
+        return False
+    try:
+        fh = open(_lock_file_path(), "w")
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        # Another process holds the file lock.
+        try:
+            fh.close()
+        except Exception:
+            pass
+        maintenance_lock.release()
+        return False
+    except Exception:
+        # Could not even open the lock file; fall back to the in-process lock
+        # alone rather than blocking maintenance entirely.
+        _maintenance_lock_fh = None
+        return True
+    _maintenance_lock_fh = fh
+    return True
+
+
+def release_maintenance_lock():
+    global _maintenance_lock_fh
+    import fcntl
+    fh = _maintenance_lock_fh
+    _maintenance_lock_fh = None
+    if fh is not None:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        try:
+            fh.close()
+        except Exception:
+            pass
+    if maintenance_lock.locked():
+        maintenance_lock.release()
+
+
+@contextmanager
+def maintenance_guard():
+    """Context manager wrapper around acquire/release_maintenance_lock().
+
+    Yields True if acquired, False otherwise.
+    """
+    acquired = acquire_maintenance_lock()
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            release_maintenance_lock()
 
 # Plain, immutable representation of a managed-media row for the cache below.
 _ManagedEntry = namedtuple("_ManagedEntry", ["title", "file_path", "manager", "manager_id"])
