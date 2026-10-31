@@ -894,8 +894,11 @@ def cleanup_orphaned_rules():
             except Exception:
                 continue  # Network error or other issue — don't assume orphaned
 
-            # Not in Plex — check if still in any manager
+            # Not in Plex — check if still in any manager. Track whether any
+            # manager query FAILED: a transient outage must not be mistaken for
+            # "not in any manager", or we would delete a still-valid rule.
             found_in_manager = False
+            query_failed = False
             if rule.media_title:
                 import re
                 # Strip year suffix for matching: "Show (2024)" -> "show"
@@ -913,24 +916,27 @@ def cleanup_orphaned_rules():
                             if rule.tvdb_id and s.get("tvdbId") == rule.tvdb_id:
                                 found_in_manager = True
                                 break
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        query_failed = True
+                        log.warning(f"Sonarr query failed during orphan check: {e}")
                     if not found_in_manager:
                         try:
                             for s in medusa.get_all_shows():
                                 if rule.tvdb_id and s.get("id", {}).get("tvdb") == rule.tvdb_id:
                                     found_in_manager = True
                                     break
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            query_failed = True
+                            log.warning(f"Medusa query failed during orphan check: {e}")
                     if not found_in_manager:
                         try:
                             for m in radarr.get_all_movies():
                                 if rule.tmdb_id and m.get("tmdbId") == rule.tmdb_id:
                                     found_in_manager = True
                                     break
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            query_failed = True
+                            log.warning(f"Radarr query failed during orphan check: {e}")
                 else:
                     # Fallback to title matching
                     try:
@@ -938,24 +944,34 @@ def cleanup_orphaned_rules():
                             if _title_matches(s["title"]):
                                 found_in_manager = True
                                 break
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        query_failed = True
+                        log.warning(f"Sonarr query failed during orphan check: {e}")
                     if not found_in_manager:
                         try:
                             for s in medusa.get_all_shows():
                                 if _title_matches(s.get("title", "")):
                                     found_in_manager = True
                                     break
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            query_failed = True
+                            log.warning(f"Medusa query failed during orphan check: {e}")
                     if not found_in_manager:
                         try:
                             for m in radarr.get_all_movies():
                                 if _title_matches(m["title"]):
                                     found_in_manager = True
                                     break
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            query_failed = True
+                            log.warning(f"Radarr query failed during orphan check: {e}")
+
+            if query_failed and not found_in_manager:
+                # A manager was unreachable and we didn't find the target
+                # elsewhere — cannot safely conclude the rule is orphaned.
+                log.warning(f"Skipping orphan cleanup for rule #{rule.id} "
+                            f"({rule.media_title}): a manager was unreachable this run.")
+                continue
 
             if not found_in_manager:
                 orphaned.append(rule)
