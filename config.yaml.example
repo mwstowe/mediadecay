@@ -20,6 +20,10 @@ radarr:
 medusa:
   url: http://127.0.0.1:8081
   api_key: "YOUR_MEDUSA_KEY"
+  # TLS certificate verification is ON by default. If Medusa serves HTTPS with
+  # a self-signed certificate, set this to false to disable verification
+  # (insecure — prefer installing a valid/trusted certificate instead).
+  # verify_ssl: false
 
 ombi:
   url: http://127.0.0.1:5000

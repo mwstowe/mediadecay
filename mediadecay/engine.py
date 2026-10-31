@@ -814,12 +814,13 @@ def execute_deletions(report: EngineReport):
         _mcfg = _gc()["medusa"]
         _murl = _mcfg["url"].rstrip("/")
         _mhdrs = {"X-Api-Key": _mcfg["api_key"]}
+        _mverify = _mcfg.get("verify_ssl", True)
 
         # Poll until Medusa has processed refresh for at least one of the shows
         def _medusa_refresh_done():
             for slug in medusa_shows_refreshed:
                 try:
-                    r = _req.get(f"{_murl}/api/v2/series/{slug}", headers=_mhdrs, verify=False, timeout=(10, 30))
+                    r = _req.get(f"{_murl}/api/v2/series/{slug}", headers=_mhdrs, verify=_mverify, timeout=(10, 30))
                     if r.status_code == 200:
                         return True
                 except Exception:
@@ -1347,9 +1348,10 @@ def _move_sonarr_to_medusa(result: EvalResult, dest: str):
         _mcfg = _gc()["medusa"]
         _murl = _mcfg["url"].rstrip("/")
         _mhdrs = {"X-Api-Key": _mcfg["api_key"]}
+        _mverify = _mcfg.get("verify_ssl", True)
 
         def _medusa_has_episodes():
-            r = _req.get(f"{_murl}/api/v2/series/{new_slug}/episodes?limit=1", headers=_mhdrs, verify=False)
+            r = _req.get(f"{_murl}/api/v2/series/{new_slug}/episodes?limit=1", headers=_mhdrs, verify=_mverify, timeout=(10, 30))
             return r.status_code == 200 and r.json()
 
         _wait_for(_medusa_has_episodes, timeout=30, desc='Medusa refresh after move')
@@ -1362,8 +1364,7 @@ def _move_sonarr_to_medusa(result: EvalResult, dest: str):
 
 def _move_medusa_to_sonarr(result: EvalResult, dest: str):
     """Move from Medusa to Sonarr. Safe order: verify, move files, add to Sonarr, remove from Medusa."""
-    import os, shutil, requests, warnings
-    warnings.filterwarnings("ignore")
+    import os, shutil, requests
     from mediadecay.config import get_config
 
     # Verify Sonarr is reachable
@@ -1383,7 +1384,8 @@ def _move_medusa_to_sonarr(result: EvalResult, dest: str):
     mcfg = get_config()["medusa"]
     murl = mcfg["url"].rstrip("/")
     mheaders = {"X-Api-Key": mcfg["api_key"]}
-    ep_r = requests.get(f"{murl}/api/v2/series/{show_slug}/episodes?limit=1000", headers=mheaders, verify=False, timeout=(10, 30))
+    mverify = mcfg.get("verify_ssl", True)
+    ep_r = requests.get(f"{murl}/api/v2/series/{show_slug}/episodes?limit=1000", headers=mheaders, verify=mverify, timeout=(10, 30))
     medusa_eps = ep_r.json() if ep_r.status_code == 200 else []
     ignored_eps = [(e["season"], e["episode"]) for e in medusa_eps if e.get("status") in ("Ignored", "Skipped")]
     # Capture file→episode mapping for manual import into Sonarr

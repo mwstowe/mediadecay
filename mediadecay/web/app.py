@@ -778,7 +778,6 @@ def create_app() -> Flask:
         from mediadecay.clients import plex as plex_client
         from mediadecay.engine import find_manager, _delete_direct, EvalResult
         from mediadecay.clients import sonarr, radarr, medusa
-        import warnings; warnings.filterwarnings("ignore")
         server = plex_client._server()
         item = server.fetchItem(rating_key)
         paths = plex_client.get_file_paths(item)

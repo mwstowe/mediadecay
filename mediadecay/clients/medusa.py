@@ -1,14 +1,18 @@
 import time
 import threading
+import logging
 
 import requests
 
 from mediadecay.config import get_config
 
+log = logging.getLogger(__name__)
+
 DEFAULT_TIMEOUT = (10, 30)
 
 _cache = {"shows": None, "shows_time": 0}
 _cache_lock = threading.Lock()
+_insecure_warned = False
 
 
 def _request_with_retry(method, url, retries=2, **kwargs):
@@ -31,11 +35,20 @@ def _request_with_retry(method, url, retries=2, **kwargs):
 
 def _base() -> tuple[str, dict, bool]:
     cfg = get_config()["medusa"]
-    verify_ssl = cfg.get("verify_ssl", False)
+    # Verify TLS certificates by default. Operators with a self-signed Medusa
+    # cert must opt out explicitly with `medusa.verify_ssl: false`.
+    verify_ssl = cfg.get("verify_ssl", True)
+    if not verify_ssl:
+        global _insecure_warned
+        if not _insecure_warned:
+            log.warning("Medusa TLS certificate verification is DISABLED "
+                        "(medusa.verify_ssl is false). Connections are vulnerable "
+                        "to interception. Set verify_ssl: true once a valid cert is in place.")
+            _insecure_warned = True
     return cfg["url"].rstrip("/"), {"X-Api-Key": cfg["api_key"]}, verify_ssl
 
 
-def _get(url, headers, verify=False):
+def _get(url, headers, verify=True):
     return requests.get(url, headers=headers, verify=verify, timeout=DEFAULT_TIMEOUT)
 
 

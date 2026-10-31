@@ -117,8 +117,6 @@ def _get_system_accounts():
 def get_manager_info():
     """Build a lookup of file path -> {managers, ended} from Sonarr, Radarr, Medusa."""
     from mediadecay.clients import sonarr, radarr, medusa
-    import warnings
-    warnings.filterwarnings("ignore")
     info = {}
 
     try:
@@ -318,8 +316,6 @@ def all_episodes_watched_by(show, usernames: list[str]) -> tuple[bool, datetime 
 def get_move_destinations() -> list[dict]:
     """Return all known root folders with manager and Plex library info."""
     from mediadecay.clients import sonarr, radarr, medusa
-    import warnings
-    warnings.filterwarnings("ignore")
 
     # Get Plex library → path mapping
     lib_paths = {}
