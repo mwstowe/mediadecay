@@ -66,3 +66,41 @@ def engine_mod(db, monkeypatch):
     engine._invalidate_managed_cache()
     yield engine
     engine._invalidate_managed_cache()
+
+
+@pytest.fixture
+def web_client(db, monkeypatch):
+    """A Flask test client with an authenticated session.
+
+    Avoids starting the scheduler, and seeds a known bcrypt admin password so
+    login succeeds.
+    """
+    import bcrypt
+
+    from mediadecay import config as config_mod
+
+    cfg = config_mod.get_config()
+    cfg["web"]["admin_password"] = bcrypt.hashpw(b"testpass", bcrypt.gensalt()).decode()
+    cfg["web"].pop("ssl_cert", None)
+    cfg["web"].pop("ssl_key", None)
+
+    # Don't spin up the background scheduler in tests.
+    import mediadecay.scheduler as sched
+    monkeypatch.setattr(sched, "start_scheduler", lambda app: None)
+
+    from mediadecay.web.app import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    client.get("/login")
+    with client.session_transaction() as s:
+        tok = s.get("_csrf_token")
+    client.post("/login", data={"password": "testpass", "csrf_token": tok})
+
+    def _token():
+        with client.session_transaction() as s:
+            return s.get("_csrf_token")
+
+    client.csrf_token = _token
+    yield client

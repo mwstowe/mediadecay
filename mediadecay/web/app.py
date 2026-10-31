@@ -632,6 +632,20 @@ def create_app() -> Flask:
         flash(f"Deletion of '{title}' started in background.", "info")
         return redirect(url_for("browse_library", library=library))
 
+    def _validate_move_dest(dest):
+        """Return True if dest is one of the server-known move destinations.
+
+        The UI offers a dropdown, but a crafted POST could send any value, so
+        the destination must be validated server-side before any move runs.
+        """
+        try:
+            from mediadecay.clients import plex as plex_client
+            valid = {d["value"] for d in plex_client.get_move_destinations()}
+        except Exception as e:
+            log.warning(f"Could not load move destinations for validation: {e}")
+            return False
+        return dest in valid
+
     @app.route("/browse/<library>/<int:rating_key>/move", methods=["POST"])
     @login_required
     def browse_move(library, rating_key):
@@ -641,6 +655,9 @@ def create_app() -> Flask:
         dest = request.form.get("move_to", "")
         if not dest:
             return redirect(url_for("browse_item", library=library, rating_key=rating_key))
+        if not _validate_move_dest(dest):
+            flash("Invalid move destination.", "error")
+            return redirect(url_for("browse_library", library=library))
         server = plex_client._server()
         try:
             item = server.fetchItem(rating_key)
@@ -836,6 +853,9 @@ def create_app() -> Flask:
         from mediadecay.engine import find_manager, _do_move, _wait_for, EvalResult
         dest = request.form.get("move_to", "")
         if not dest:
+            return redirect(url_for("rules_list"))
+        if not _validate_move_dest(dest):
+            flash("Invalid move destination.", "error")
             return redirect(url_for("rules_list"))
         server = plex_client._server()
         item = server.fetchItem(rating_key)
