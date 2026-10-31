@@ -958,51 +958,218 @@ def create_app() -> Flask:
     @app.route("/config", methods=["GET", "POST"])
     @login_required
     def config_edit():
-        import yaml, re
-        from mediadecay.config import get_config, load_config
+        import yaml
+        from mediadecay.config import get_config, load_config, validate_config
         config_path = os.environ.get("MEDIACLEANER_CONFIG", "config.yaml")
-        MASK = "••••••••"
-        SENSITIVE_KEYS = ("smtp_pass", "admin_password", "secret_key", "api_key", "token")
+        SECRET_SENTINEL = "__KEEP__"  # blank password field => keep existing value
 
-        def _mask_yaml(text):
-            def replacer(m):
-                return f"{m.group(1)}{MASK}"
-            for key in SENSITIVE_KEYS:
-                text = re.sub(rf"({key}:\s*).+", replacer, text)
-            return text
+        # Declarative schema: (section, key, label, kind, secret)
+        # kind: text | int | bool | password | select:<opt,opt,...>
+        SCHEMA = [
+            ("plex", "url", "Plex URL", "text", False),
+            ("plex", "token", "Plex Token", "password", True),
+            ("sonarr", "url", "Sonarr URL", "text", False),
+            ("sonarr", "api_key", "Sonarr API Key", "password", True),
+            ("radarr", "url", "Radarr URL", "text", False),
+            ("radarr", "api_key", "Radarr API Key", "password", True),
+            ("medusa", "url", "Medusa URL", "text", False),
+            ("medusa", "api_key", "Medusa API Key", "password", True),
+            ("medusa", "verify_ssl", "Verify Medusa TLS certificate", "bool", False),
+            ("ombi", "url", "Ombi URL", "text", False),
+            ("ombi", "api_key", "Ombi API Key", "password", True),
+            ("web", "base_url", "Base URL (for email links)", "text", False),
+            ("web", "port", "Web port", "int", False),
+            ("web", "ssl_cert", "SSL certificate path", "text", False),
+            ("web", "ssl_key", "SSL key path", "text", False),
+            ("notifications", "enabled", "Notifications enabled", "bool", False),
+            ("notifications", "method", "Method", "select:email,discord", False),
+            ("maintenance", "dry_run", "Dry run (preview only, no deletions)", "bool", False),
+            ("maintenance", "schedule", "Daily schedule (HH:MM)", "text", False),
+            ("maintenance", "remove_empty_collections", "Remove empty Plex collections", "bool", False),
+            ("maintenance", "log_file", "Log file path", "text", False),
+        ]
+        # Email notification subfields live under notifications.email
+        EMAIL_SCHEMA = [
+            ("from", "From address", "text", False),
+            ("admin", "Admin recipient", "text", False),
+            ("smtp_host", "SMTP host", "text", False),
+            ("smtp_port", "SMTP port", "int", False),
+            ("smtp_tls", "SMTP TLS mode", "select:,starttls,ssl,none", False),
+            ("smtp_user", "SMTP username", "text", False),
+            ("smtp_pass", "SMTP password", "password", True),
+        ]
 
-        def _restore_secrets(new_text, old_text):
-            old_cfg = yaml.safe_load(old_text) or {}
-            new_cfg = yaml.safe_load(new_text) or {}
-            _restore_nested(new_cfg, old_cfg)
-            return new_cfg
+        def _field_name(section, key):
+            return f"cfg__{section}__{key}"
 
-        def _restore_nested(new, old, path=""):
-            if isinstance(new, dict) and isinstance(old, dict):
-                for k, v in new.items():
-                    if isinstance(v, dict):
-                        _restore_nested(v, old.get(k, {}))
-                    elif v == MASK and k in old:
-                        new[k] = old[k]
+        def _section_submitted(section):
+            # Hidden marker emitted once per rendered section (see template),
+            # so we can tell an unchecked checkbox apart from a non-submission.
+            return f"__section__{section}" in request.form
+
+        def _coerce(kind, raw):
+            if kind == "int":
+                return _int_or(raw, None)
+            if kind == "bool":
+                return raw is not None  # checkbox present => True
+            if kind.startswith("select"):
+                return raw or None
+            return (raw.strip() or None) if raw is not None else None
+
+        def _build_view(cfg):
+            """Produce a template-friendly structure from the config dict."""
+            by_section = {}
+            for section, key, label, kind, secret in SCHEMA:
+                val = cfg.get(section, {}).get(key)
+                by_section.setdefault(section, []).append({
+                    "name": _field_name(section, key), "label": label, "kind": kind,
+                    "secret": secret, "has_value": bool(val),
+                    "value": "" if secret else ("" if val is None else val),
+                    "checked": bool(val) if kind == "bool" else False,
+                    "options": kind.split(":", 1)[1].split(",") if kind.startswith("select") else [],
+                    "selected": cfg.get(section, {}).get(key) or "",
+                })
+            email = cfg.get("notifications", {}).get("email", {}) or {}
+            email_fields = []
+            for key, label, kind, secret in EMAIL_SCHEMA:
+                val = email.get(key)
+                email_fields.append({
+                    "name": f"email__{key}", "label": label, "kind": kind,
+                    "secret": secret, "has_value": bool(val),
+                    "value": "" if secret else ("" if val is None else val),
+                    "options": kind.split(":", 1)[1].split(",") if kind.startswith("select") else [],
+                    "selected": email.get(key) or "",
+                })
+            discord = cfg.get("notifications", {}).get("discord", {}) or {}
+            user_tokens = cfg.get("plex", {}).get("user_tokens", {}) or {}
+            user_emails = cfg.get("plex", {}).get("user_emails", {}) or {}
+            excluded = cfg.get("maintenance", {}).get("excluded_libraries", []) or []
+            return {
+                "by_section": by_section,
+                "email_fields": email_fields,
+                "discord_has_webhook": bool(discord.get("webhook_url")),
+                "user_tokens": user_tokens,
+                "user_emails": user_emails,
+                "excluded_libraries": excluded,
+            }
+
+        def _apply_form(cfg):
+            """Merge submitted form values onto cfg (in place)."""
+            for section, key, _label, kind, secret in SCHEMA:
+                fname = _field_name(section, key)
+                if kind == "bool":
+                    # A checkbox only appears in the form when checked. Only
+                    # update it when this section was actually submitted (guard
+                    # against partial posts wiping unrelated bools).
+                    if _section_submitted(section):
+                        cfg.setdefault(section, {})[key] = fname in request.form
+                    continue
+                if fname not in request.form:
+                    continue  # field not part of this submission; leave as-is
+                if secret:
+                    submitted = request.form.get(fname, "")
+                    if submitted and submitted != SECRET_SENTINEL:
+                        cfg.setdefault(section, {})[key] = submitted
+                    # blank/sentinel => keep existing (do nothing)
+                    continue
+                val = _coerce(kind, request.form.get(fname))
+                if val is None:
+                    cfg.setdefault(section, {}).pop(key, None)
+                else:
+                    cfg.setdefault(section, {})[key] = val
+
+            # Email subsection (only when the notifications section was submitted)
+            if _section_submitted("notifications"):
+                cfg.setdefault("notifications", {}).setdefault("email", {})
+                for key, _label, kind, secret in EMAIL_SCHEMA:
+                    if secret:
+                        submitted = request.form.get(f"email__{key}", "")
+                        if submitted and submitted != SECRET_SENTINEL:
+                            cfg["notifications"]["email"][key] = submitted
+                        continue
+                    if f"email__{key}" not in request.form:
+                        continue
+                    val = _coerce(kind, request.form.get(f"email__{key}"))
+                    if val is None:
+                        cfg["notifications"]["email"].pop(key, None)
+                    else:
+                        cfg["notifications"]["email"][key] = val
+
+                # Discord webhook (secret)
+                webhook = request.form.get("discord__webhook_url", "")
+                if webhook and webhook != SECRET_SENTINEL:
+                    cfg.setdefault("notifications", {}).setdefault("discord", {})["webhook_url"] = webhook
+
+            # Dynamic maps: user_tokens / user_emails (parallel name/value arrays).
+            # Only processed when the Plex section was submitted (they render there),
+            # so a partial post from elsewhere can't wipe them.
+            def _parse_map(prefix):
+                names = request.form.getlist(f"{prefix}_name[]")
+                values = request.form.getlist(f"{prefix}_value[]")
+                out = {}
+                for n, v in zip(names, values):
+                    n = n.strip()
+                    if n and v.strip():
+                        out[n] = v.strip()
+                return out
+
+            if _section_submitted("plex"):
+                tokens = _parse_map("user_tokens")
+                emails = _parse_map("user_emails")
+                plex = cfg.setdefault("plex", {})
+                # Preserve a token whose value field was the mask sentinel.
+                old_tokens = plex.get("user_tokens", {}) or {}
+                for n, v in list(tokens.items()):
+                    if v == SECRET_SENTINEL:
+                        if n in old_tokens:
+                            tokens[n] = old_tokens[n]
+                        else:
+                            tokens.pop(n)
+                plex["user_tokens"] = tokens
+                plex["user_emails"] = emails
+
+            # Excluded libraries (one per line), only if maintenance submitted.
+            if _section_submitted("maintenance"):
+                raw_excluded = request.form.get("excluded_libraries", "")
+                excluded = [ln.strip() for ln in raw_excluded.splitlines() if ln.strip()]
+                cfg.setdefault("maintenance", {})["excluded_libraries"] = excluded
+
+            # Prune optional manager sections that ended up empty, so
+            # validate_config doesn't flag a present-but-incomplete section.
+            for section in ("sonarr", "radarr", "medusa", "ombi"):
+                sec = cfg.get(section)
+                if isinstance(sec, dict) and not sec.get("url") and not sec.get("api_key"):
+                    cfg.pop(section, None)
 
         if request.method == "POST":
             try:
                 with open(config_path) as f:
-                    old_text = f.read()
-                new_cfg = _restore_secrets(request.form["config_yaml"], old_text)
-                if not isinstance(new_cfg, dict):
-                    raise ValueError("Config must be a YAML mapping")
+                    cfg = yaml.safe_load(f) or {}
+                _apply_form(cfg)
+                validate_config(cfg)
                 with open(config_path, "w") as f:
-                    yaml.dump(new_cfg, f, default_flow_style=False, sort_keys=False)
+                    yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
                 load_config(config_path)
-                return render_template("config.html", config_yaml=_mask_yaml(request.form["config_yaml"]),
-                                       success="Configuration saved. Restart service for some changes to take effect.")
+                return render_template("config.html", view=_build_view(cfg),
+                                       secret_sentinel=SECRET_SENTINEL,
+                                       success="Configuration saved. Restart the service for "
+                                               "port/SSL changes to take effect.")
             except Exception as e:
-                return render_template("config.html", config_yaml=request.form["config_yaml"],
+                # Re-render with submitted values where possible, show the error.
+                try:
+                    with open(config_path) as f:
+                        cfg = yaml.safe_load(f) or {}
+                    _apply_form(cfg)
+                except Exception:
+                    cfg = get_config()
+                return render_template("config.html", view=_build_view(cfg),
+                                       secret_sentinel=SECRET_SENTINEL,
                                        error=f"Invalid config: {e}")
+
         with open(config_path) as f:
-            config_yaml = f.read()
-        return render_template("config.html", config_yaml=_mask_yaml(config_yaml))
+            cfg = yaml.safe_load(f) or {}
+        return render_template("config.html", view=_build_view(cfg),
+                               secret_sentinel=SECRET_SENTINEL)
 
     @app.route("/config/password", methods=["POST"])
     @login_required

@@ -22,17 +22,123 @@
 </div>
 {% endif %}
 
-{% if config_yaml is not none %}
-<div class="card">
+{% macro field(f) %}
+  <label for="{{ f.name }}">{{ f.label }}</label>
+  {% if f.kind == 'bool' %}
+    <input type="checkbox" name="{{ f.name }}" id="{{ f.name }}" {% if f.checked %}checked{% endif %}>
+  {% elif f.kind.startswith('select') %}
+    <select name="{{ f.name }}" id="{{ f.name }}">
+      {% for opt in f.options %}
+      <option value="{{ opt }}" {% if opt == f.selected %}selected{% endif %}>{{ opt or '(default)' }}</option>
+      {% endfor %}
+    </select>
+  {% elif f.secret %}
+    <input type="password" name="{{ f.name }}" id="{{ f.name }}"
+           placeholder="{{ '•••••••• (set — leave blank to keep)' if f.has_value else '(not set)' }}"
+           autocomplete="new-password">
+  {% elif f.kind == 'int' %}
+    <input type="number" name="{{ f.name }}" id="{{ f.name }}" value="{{ f.value }}">
+  {% else %}
+    <input type="text" name="{{ f.name }}" id="{{ f.name }}" value="{{ f.value }}">
+  {% endif %}
+{% endmacro %}
+
+{% if view %}
 <form method="post">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-  <label for="config_yaml">config.yaml</label>
-  <textarea name="config_yaml" id="config_yaml" rows="30" style="width:100%;font-family:monospace;font-size:0.85rem;background:#222;color:#eee;border:1px solid #444;padding:0.5rem;border-radius:4px;">{{ config_yaml }}</textarea>
-  <br><br>
+
+  {% set sections = {
+    'plex': 'Plex', 'sonarr': 'Sonarr', 'radarr': 'Radarr',
+    'medusa': 'Medusa', 'ombi': 'Ombi', 'web': 'Web UI',
+    'notifications': 'Notifications', 'maintenance': 'Maintenance'
+  } %}
+  {% for skey, stitle in sections.items() %}
+  {% set section_fields = view.by_section.get(skey, []) %}
+  {% if section_fields or skey in ('plex', 'notifications', 'maintenance') %}
+  <div class="card">
+    <h2>{{ stitle }}</h2>
+    <input type="hidden" name="__section__{{ skey }}" value="1">
+    {% for f in section_fields %}
+      {{ field(f) }}
+    {% endfor %}
+
+    {% if skey == 'plex' %}
+      <h3 style="margin-top:1rem;color:#9fc4cb;">Per-user Plex tokens</h3>
+      <small style="color:#aaa;">Used to check watch status per user. Leave a token blank to keep the existing one.</small>
+      <div id="user_tokens">
+        {% for name, _val in view.user_tokens.items() %}
+        <div class="kv-row" style="display:flex;gap:0.5rem;margin:0.3rem 0;">
+          <input type="text" name="user_tokens_name[]" value="{{ name }}" placeholder="username" style="max-width:200px;">
+          <input type="password" name="user_tokens_value[]" placeholder="•••••••• (set — blank to keep)" autocomplete="new-password" style="max-width:260px;">
+        </div>
+        {% endfor %}
+        <div class="kv-row" style="display:flex;gap:0.5rem;margin:0.3rem 0;">
+          <input type="text" name="user_tokens_name[]" placeholder="username" style="max-width:200px;">
+          <input type="password" name="user_tokens_value[]" placeholder="new token" autocomplete="new-password" style="max-width:260px;">
+        </div>
+      </div>
+
+      <h3 style="margin-top:1rem;color:#9fc4cb;">User emails</h3>
+      <small style="color:#aaa;">Maps usernames to email addresses for confirmation emails.</small>
+      <div id="user_emails">
+        {% for name, val in view.user_emails.items() %}
+        <div class="kv-row" style="display:flex;gap:0.5rem;margin:0.3rem 0;">
+          <input type="text" name="user_emails_name[]" value="{{ name }}" placeholder="username" style="max-width:200px;">
+          <input type="text" name="user_emails_value[]" value="{{ val }}" placeholder="email@example.com" style="max-width:260px;">
+        </div>
+        {% endfor %}
+        <div class="kv-row" style="display:flex;gap:0.5rem;margin:0.3rem 0;">
+          <input type="text" name="user_emails_name[]" placeholder="username" style="max-width:200px;">
+          <input type="text" name="user_emails_value[]" placeholder="email@example.com" style="max-width:260px;">
+        </div>
+      </div>
+    {% endif %}
+
+    {% if skey == 'notifications' %}
+      <h3 style="margin-top:1rem;color:#9fc4cb;">Email</h3>
+      {% for f in view.email_fields %}
+        {{ field(f) }}
+      {% endfor %}
+      <h3 style="margin-top:1rem;color:#9fc4cb;">Discord</h3>
+      <label for="discord__webhook_url">Webhook URL</label>
+      <input type="password" name="discord__webhook_url" id="discord__webhook_url"
+             placeholder="{{ '•••••••• (set — leave blank to keep)' if view.discord_has_webhook else '(not set)' }}"
+             autocomplete="new-password">
+    {% endif %}
+
+    {% if skey == 'maintenance' %}
+      <label for="excluded_libraries">Excluded libraries (one per line)</label>
+      <textarea name="excluded_libraries" id="excluded_libraries" rows="4"
+                style="width:100%;max-width:400px;background:#0f2a30;border:1px solid #1e4a52;color:#eee;border-radius:4px;padding:0.4rem;">{% for lib in view.excluded_libraries %}{{ lib }}
+{% endfor %}</textarea>
+    {% endif %}
+  </div>
+  {% endif %}
+  {% endfor %}
+
   <button type="submit" class="btn btn-primary">Save Configuration</button>
-  <small style="color:#aaa;margin-left:1rem;">Some changes (port, SSL) require a service restart.</small>
+  <small style="color:#aaa;margin-left:1rem;">Port/SSL changes require a service restart.</small>
 </form>
-</div>
+
+<script>
+// Add a fresh blank row when the last key/value row gets a name typed in.
+function wireGrow(containerId, nameField) {
+  var c = document.getElementById(containerId);
+  if (!c) return;
+  c.addEventListener('input', function(e) {
+    var rows = c.querySelectorAll('.kv-row');
+    var last = rows[rows.length - 1];
+    var lastName = last.querySelector('input[name="' + nameField + '"]');
+    if (lastName && lastName.value.trim()) {
+      var clone = last.cloneNode(true);
+      clone.querySelectorAll('input').forEach(function(i){ i.value=''; });
+      c.appendChild(clone);
+    }
+  });
+}
+wireGrow('user_tokens', 'user_tokens_name[]');
+wireGrow('user_emails', 'user_emails_name[]');
+</script>
 {% endif %}
 
 <div class="card" style="margin-top:2rem;">
@@ -40,14 +146,14 @@
 <form method="post" action="{{ url_for('config_password') }}">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <label for="new_password">New Password</label>
-  <input type="password" name="new_password" id="new_password" required minlength="4">
+  <input type="password" name="new_password" id="new_password" required minlength="4" autocomplete="new-password">
   <br><br>
   <button type="submit" class="btn btn-primary">Update Password</button>
 </form>
 </div>
 
 <div class="card" style="margin-top:2rem;">
-<h2>Test Notifications</h2>
+<h2>Test Notifications &amp; Connections</h2>
 {% if request.args.get("msg") == "sent" %}<p style="color:#4caf50;">Test email sent successfully.</p>{% endif %}
 {% if request.args.get("msg") == "fail" %}<p class="error">Failed: {{ request.args.get("err", "unknown") }}</p>{% endif %}
 <form method="post" action="{{ url_for('config_test_email') }}" style="display:inline;">
