@@ -65,33 +65,29 @@
     {% if skey == 'plex' %}
       <h3 style="margin-top:1rem;color:#9fc4cb;">Per-user Plex tokens</h3>
       <small style="color:#aaa;">Used to check watch status per user. Leave a token blank to keep the existing one.</small>
-      <div id="user_tokens">
+      <div id="user_tokens" class="kv-editor" data-value-type="password">
         {% for name, _val in view.user_tokens.items() %}
         <div class="kv-row" style="display:flex;gap:0.5rem;margin:0.3rem 0;">
           <input type="text" name="user_tokens_name[]" value="{{ name }}" placeholder="username" style="max-width:200px;">
           <input type="password" name="user_tokens_value[]" placeholder="•••••••• (set — blank to keep)" autocomplete="new-password" style="max-width:260px;">
+          <button type="button" class="btn btn-danger btn-sm kv-remove">✕</button>
         </div>
         {% endfor %}
-        <div class="kv-row" style="display:flex;gap:0.5rem;margin:0.3rem 0;">
-          <input type="text" name="user_tokens_name[]" placeholder="username" style="max-width:200px;">
-          <input type="password" name="user_tokens_value[]" placeholder="new token" autocomplete="new-password" style="max-width:260px;">
-        </div>
       </div>
+      <button type="button" class="btn btn-sm btn-primary kv-add" data-target="user_tokens">+ Add user token</button>
 
       <h3 style="margin-top:1rem;color:#9fc4cb;">User emails</h3>
       <small style="color:#aaa;">Maps usernames to email addresses for confirmation emails.</small>
-      <div id="user_emails">
+      <div id="user_emails" class="kv-editor" data-value-type="text">
         {% for name, val in view.user_emails.items() %}
         <div class="kv-row" style="display:flex;gap:0.5rem;margin:0.3rem 0;">
           <input type="text" name="user_emails_name[]" value="{{ name }}" placeholder="username" style="max-width:200px;">
           <input type="text" name="user_emails_value[]" value="{{ val }}" placeholder="email@example.com" style="max-width:260px;">
+          <button type="button" class="btn btn-danger btn-sm kv-remove">✕</button>
         </div>
         {% endfor %}
-        <div class="kv-row" style="display:flex;gap:0.5rem;margin:0.3rem 0;">
-          <input type="text" name="user_emails_name[]" placeholder="username" style="max-width:200px;">
-          <input type="text" name="user_emails_value[]" placeholder="email@example.com" style="max-width:260px;">
-        </div>
       </div>
+      <button type="button" class="btn btn-sm btn-primary kv-add" data-target="user_emails">+ Add user email</button>
     {% endif %}
 
     {% if skey == 'notifications' %}
@@ -121,23 +117,54 @@
 </form>
 
 <script>
-// Add a fresh blank row when the last key/value row gets a name typed in.
-function wireGrow(containerId, nameField) {
-  var c = document.getElementById(containerId);
-  if (!c) return;
-  c.addEventListener('input', function(e) {
-    var rows = c.querySelectorAll('.kv-row');
-    var last = rows[rows.length - 1];
-    var lastName = last.querySelector('input[name="' + nameField + '"]');
-    if (lastName && lastName.value.trim()) {
-      var clone = last.cloneNode(true);
-      clone.querySelectorAll('input').forEach(function(i){ i.value=''; });
-      c.appendChild(clone);
-    }
-  });
+// Key/value editors: explicit Add and per-row Remove buttons.
+function kvFieldPrefix(editorId) {
+  // e.g. "user_tokens" -> name attrs "user_tokens_name[]" / "user_tokens_value[]"
+  return editorId;
 }
-wireGrow('user_tokens', 'user_tokens_name[]');
-wireGrow('user_emails', 'user_emails_name[]');
+
+function kvAddRow(editor) {
+  var prefix = kvFieldPrefix(editor.id);
+  var valueType = editor.dataset.valueType === 'password' ? 'password' : 'text';
+  var valuePlaceholder = valueType === 'password' ? 'new token' : 'value';
+  var row = document.createElement('div');
+  row.className = 'kv-row';
+  row.style.cssText = 'display:flex;gap:0.5rem;margin:0.3rem 0;';
+  var nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.name = prefix + '_name[]';
+  nameInput.placeholder = 'username';
+  nameInput.style.maxWidth = '200px';
+  var valueInput = document.createElement('input');
+  valueInput.type = valueType;
+  valueInput.name = prefix + '_value[]';
+  valueInput.placeholder = valuePlaceholder;
+  valueInput.style.maxWidth = '260px';
+  if (valueType === 'password') valueInput.autocomplete = 'new-password';
+  var remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'btn btn-danger btn-sm kv-remove';
+  remove.textContent = '✕';
+  row.appendChild(nameInput);
+  row.appendChild(valueInput);
+  row.appendChild(remove);
+  editor.appendChild(row);
+  nameInput.focus();
+}
+
+document.addEventListener('click', function(e) {
+  var add = e.target.closest('.kv-add');
+  if (add) {
+    var editor = document.getElementById(add.dataset.target);
+    if (editor) kvAddRow(editor);
+    return;
+  }
+  var rm = e.target.closest('.kv-remove');
+  if (rm) {
+    var row = rm.closest('.kv-row');
+    if (row) row.remove();
+  }
+});
 </script>
 {% endif %}
 

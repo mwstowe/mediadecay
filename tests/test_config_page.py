@@ -172,3 +172,57 @@ def test_invalid_config_rejected(config_client):
     assert b"Invalid config" in r.data
     # Original value still on disk.
     assert _current(config_client)["plex"]["url"] == "http://127.0.0.1:32400"
+
+
+def test_add_remove_buttons_rendered(config_client):
+    body = config_client.get("/config").data.decode()
+    # Explicit Add buttons for both key/value editors.
+    assert 'class="btn btn-sm btn-primary kv-add" data-target="user_tokens"' in body
+    assert 'class="btn btn-sm btn-primary kv-add" data-target="user_emails"' in body
+    # Existing rows carry a Remove button.
+    assert "kv-remove" in body
+    # The old grow-on-type helper is gone.
+    assert "wireGrow" not in body
+
+
+def test_existing_rows_have_no_trailing_blank(config_client):
+    body = config_client.get("/config").data.decode()
+    # The alice row renders; there should be exactly one name input per existing
+    # entry (no always-present extra blank row appended by the template).
+    assert body.count('name="user_emails_name[]"') == 1
+    assert body.count('name="user_tokens_name[]"') == 1
+
+
+def test_removing_all_rows_clears_map(config_client):
+    tok = config_client.csrf_token()
+    # Submit the plex section with NO user_emails/user_tokens rows at all.
+    data = {
+        "csrf_token": tok,
+        "__section__plex": "1", "__section__sonarr": "1", "__section__web": "1",
+        "cfg__plex__url": "http://127.0.0.1:32400",
+        "cfg__sonarr__url": "http://127.0.0.1:8989",
+        "cfg__web__port": "9393",
+    }
+    r = config_client.post("/config", data=data)
+    assert r.status_code == 200
+    cfg = _current(config_client)
+    assert cfg["plex"]["user_emails"] == {}
+    assert cfg["plex"]["user_tokens"] == {}
+
+
+def test_adding_a_user_email_row_persists(config_client):
+    tok = config_client.csrf_token()
+    data = {
+        "csrf_token": tok,
+        "__section__plex": "1", "__section__sonarr": "1", "__section__web": "1",
+        "cfg__plex__url": "http://127.0.0.1:32400",
+        "cfg__sonarr__url": "http://127.0.0.1:8989",
+        "cfg__web__port": "9393",
+        # Two rows (as the Add button would produce).
+        "user_emails_name[]": ["alice", "bob"],
+        "user_emails_value[]": ["alice@example.com", "bob@example.com"],
+    }
+    r = config_client.post("/config", data=data)
+    assert r.status_code == 200
+    emails = _current(config_client)["plex"]["user_emails"]
+    assert emails == {"alice": "alice@example.com", "bob": "bob@example.com"}
