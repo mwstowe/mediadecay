@@ -20,6 +20,16 @@ from sqlalchemy.orm import joinedload
 log = logging.getLogger(__name__)
 
 
+def _int_or(value, default):
+    """Parse an int from form input, returning default on empty/invalid input."""
+    try:
+        if value is None or value == "":
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def create_app() -> Flask:
     load_config()
     init_db()
@@ -94,6 +104,20 @@ def create_app() -> Flask:
         if not expected or not sent or not hmac.compare_digest(sent, expected):
             log.warning(f"CSRF validation failed for {request.path}")
             return ("CSRF validation failed. Reload the page and try again.", 400)
+
+    @app.errorhandler(Exception)
+    def _handle_unexpected(e):
+        # Let Werkzeug HTTP exceptions (404, 405, the 400 above, etc.) pass
+        # through with their normal status; only wrap unexpected errors.
+        from werkzeug.exceptions import HTTPException
+        if isinstance(e, HTTPException):
+            return e
+        import traceback
+        log.error(f"Unhandled error on {request.path}: {e}\n{traceback.format_exc()}")
+        try:
+            return render_template("error.html", message=str(e)), 500
+        except Exception:
+            return ("An unexpected error occurred. Check the server log.", 500)
 
     @app.template_filter("humansize")
     def humansize(value):
@@ -216,10 +240,10 @@ def create_app() -> Flask:
 
             triggers.append(Trigger(
                 type=ttype,
-                days=int(days_list[i]) if i < len(days_list) else 7,
+                days=_int_or(days_list[i] if i < len(days_list) else None, 7),
                 action=action,
                 move_to=move_tos[i] if i < len(move_tos) and move_tos[i] else None,
-                confirm_days=int(confirm_days_list[i]) if i < len(confirm_days_list) else 7,
+                confirm_days=_int_or(confirm_days_list[i] if i < len(confirm_days_list) else None, 7),
                 confirm_methods=",".join(methods),
                 confirm_email=confirm_emails[i] if i < len(confirm_emails) and confirm_emails[i] else None,
                 enabled=True,
@@ -240,7 +264,7 @@ def create_app() -> Flask:
                 watched_by=",".join(request.form.getlist("watched_by")) or "any",
                 protect_on_deck="protect_on_deck" in request.form,
                 processing_mode=request.form.get("processing_mode", "episode"),
-                min_episodes=int(request.form.get("min_episodes", 0)),
+                min_episodes=_int_or(request.form.get("min_episodes"), 0),
                 remove_show_when_empty=request.form.get("remove_show_when_empty", "never"),
                 enabled="enabled" in request.form,
                 external_id=request.form.get("external_id") or None,
@@ -308,7 +332,7 @@ def create_app() -> Flask:
             rule.watched_by = ",".join(request.form.getlist("watched_by")) or "any"
             rule.protect_on_deck = "protect_on_deck" in request.form
             rule.processing_mode = request.form.get("processing_mode", "episode")
-            rule.min_episodes = int(request.form.get("min_episodes", 0))
+            rule.min_episodes = _int_or(request.form.get("min_episodes"), 0)
             rule.remove_show_when_empty = request.form.get("remove_show_when_empty", "never")
             rule.enabled = "enabled" in request.form
             rule.external_id = request.form.get("external_id") or rule.external_id

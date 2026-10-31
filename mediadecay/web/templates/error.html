@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Error — MediaDecay{% endblock %}
+{% block content %}
+<h1>Something went wrong</h1>
+<div class="card">
+  <p class="error">An unexpected error occurred while handling your request.</p>
+  {% if message %}
+  <p style="color:#aaa;font-family:monospace;font-size:0.85rem;">{{ message }}</p>
+  {% endif %}
+  <p><a href="{{ url_for('dashboard') }}" class="btn btn-primary">Back to Dashboard</a></p>
+</div>
+{% endblock %}
