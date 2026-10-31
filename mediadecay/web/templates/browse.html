@@ -80,9 +80,11 @@
 
 <div style="margin:1rem 0;display:flex;gap:1rem;align-items:center;">
   <form method="post" action="{{ url_for('browse_delete', library=library, rating_key=item.rating_key) }}" onsubmit="return confirm('Delete {{ item.title }}?');" style="margin:0;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button type="submit" class="btn btn-danger btn-sm">Delete Now</button>
   </form>
   <form method="post" action="{{ url_for('browse_move', library=library, rating_key=item.rating_key) }}" style="margin:0;display:flex;gap:0.5rem;align-items:center;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <select name="move_to" style="max-width:300px;">
       <option value="">— Move to —</option>
       {% for d in move_destinations %}

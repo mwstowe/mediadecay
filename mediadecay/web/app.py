@@ -53,6 +53,48 @@ def create_app() -> Flask:
     app = Flask(__name__)
     app.secret_key = cfg["web"]["secret_key"]
 
+    # Harden the session cookie. Secure is enabled when the app serves TLS
+    # directly (ssl_cert/ssl_key configured); if terminating TLS at a proxy,
+    # the proxy should still forward a Lax SameSite cookie.
+    app.config.update(
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SECURE=bool(cfg["web"].get("ssl_cert") and cfg["web"].get("ssl_key")),
+    )
+
+    # --- CSRF protection (lightweight, no extra dependency) ---
+    import hmac
+    import secrets as _secrets
+
+    # Routes that are intentionally unauthenticated and token-authenticated by
+    # their own URL token (email action links); exempt from form CSRF.
+    _csrf_exempt_endpoints = {
+        "confirm_snooze", "confirm_disable", "confirm_unwatched", "confirm_keep",
+    }
+
+    def _get_csrf_token():
+        token = session.get("_csrf_token")
+        if not token:
+            token = _secrets.token_urlsafe(32)
+            session["_csrf_token"] = token
+        return token
+
+    @app.context_processor
+    def _inject_csrf():
+        return {"csrf_token": _get_csrf_token}
+
+    @app.before_request
+    def _csrf_protect():
+        if request.method != "POST":
+            return
+        if request.endpoint in _csrf_exempt_endpoints:
+            return
+        sent = request.form.get("csrf_token", "")
+        expected = session.get("_csrf_token", "")
+        if not expected or not sent or not hmac.compare_digest(sent, expected):
+            log.warning(f"CSRF validation failed for {request.path}")
+            return ("CSRF validation failed. Reload the page and try again.", 400)
+
     @app.template_filter("humansize")
     def humansize(value):
         for unit in ("B", "KB", "MB", "GB", "TB"):

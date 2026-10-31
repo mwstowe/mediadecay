@@ -30,6 +30,7 @@
   <input type="hidden" name="mode" value="preview">
 </form>
 <form method="post" action="{{ url_for('run_now') }}" style="display:inline;margin-left:1rem;">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <button type="submit" class="btn btn-danger" onclick="return confirm('Run maintenance NOW? This will delete media per your rules.')">Run Now (Live)</button>
 </form>
 
@@ -50,6 +51,7 @@
 </form>
 {% if not ran %}
 <form method="post" action="{{ url_for('run_now') }}" style="display:inline;margin-left:1rem;">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <button type="submit" class="btn btn-danger" onclick="return confirm('Run maintenance NOW? This will delete media per your rules.')">Run Now (Live)</button>
 </form>
 {% endif %}
