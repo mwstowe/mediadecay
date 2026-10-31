@@ -23,7 +23,6 @@ def _timed_lru_cache(seconds=300, maxsize=128):
         func = lru_cache(maxsize=maxsize)(func)
         func._expiry = time.time() + seconds
         func._ttl = seconds
-        original = func.__wrapped__
 
         def wrapper(*args, **kwargs):
             if time.time() > func._expiry:

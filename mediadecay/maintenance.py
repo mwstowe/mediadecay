@@ -6,7 +6,7 @@ import sys
 
 from mediadecay.config import load_config, get_config
 from mediadecay.db import init_db
-from mediadecay.engine import EngineReport, execute_deletions, run_evaluation, sync_managed_media, process_pending_actions, get_confirmed_deletions, run_orphan_scan
+from mediadecay.engine import EngineReport, execute_deletions, run_evaluation, sync_managed_media, process_pending_actions, run_orphan_scan
 from mediadecay import notify
 
 log = logging.getLogger("mediadecay")

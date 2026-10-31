@@ -226,3 +226,60 @@ def test_adding_a_user_email_row_persists(config_client):
     assert r.status_code == 200
     emails = _current(config_client)["plex"]["user_emails"]
     assert emails == {"alice": "alice@example.com", "bob": "bob@example.com"}
+
+
+def test_blank_port_preserves_existing(config_client):
+    """Saving with the port field left blank must not wipe web.port."""
+    tok = config_client.csrf_token()
+    data = {
+        "csrf_token": tok,
+        "__section__plex": "1", "__section__sonarr": "1", "__section__web": "1",
+        "cfg__plex__url": "http://127.0.0.1:32400",
+        "cfg__sonarr__url": "http://127.0.0.1:8989",
+        "cfg__web__port": "",  # blank
+    }
+    r = config_client.post("/config", data=data)
+    assert r.status_code == 200
+    assert _current(config_client)["web"]["port"] == 9393, "blank port must keep existing value"
+
+
+def test_blank_smtp_port_preserves_existing(config_client):
+    tok = config_client.csrf_token()
+    data = {
+        "csrf_token": tok,
+        "__section__plex": "1", "__section__sonarr": "1", "__section__web": "1",
+        "__section__notifications": "1",
+        "cfg__plex__url": "http://127.0.0.1:32400",
+        "cfg__sonarr__url": "http://127.0.0.1:8989",
+        "cfg__web__port": "9393",
+        "cfg__notifications__enabled": "on",
+        "cfg__notifications__method": "email",
+        "email__from": "md@example.com",
+        "email__admin": "admin@example.com",
+        "email__smtp_host": "smtp.example.com",
+        "email__smtp_port": "",  # blank
+    }
+    r = config_client.post("/config", data=data)
+    assert r.status_code == 200
+    assert _current(config_client)["notifications"]["email"]["smtp_port"] == 587
+
+
+def test_test_connections_keeps_the_form(config_client, monkeypatch):
+    """After 'Test All Connections' the config form must still render."""
+    from mediadecay.clients import medusa, ombi, radarr, sonarr
+    from mediadecay.clients import plex as plex_client
+    for mod, attr in ((plex_client, "_server"),):
+        monkeypatch.setattr(mod, attr, lambda: type("S", (), {"friendlyName": "x"})())
+    monkeypatch.setattr(sonarr, "get_all_series", list)
+    monkeypatch.setattr(radarr, "get_all_movies", list)
+    monkeypatch.setattr(medusa, "get_all_shows", list)
+    monkeypatch.setattr(ombi, "get_movie_requests", list)
+    monkeypatch.setattr(ombi, "get_tv_requests", list)
+
+    tok = config_client.csrf_token()
+    r = config_client.post("/config/test-connections", data={"csrf_token": tok})
+    body = r.data.decode()
+    assert r.status_code == 200
+    assert "Connection Test Results" in body
+    # The edit form is still present (regression: it used to vanish).
+    assert 'name="cfg__plex__url"' in body

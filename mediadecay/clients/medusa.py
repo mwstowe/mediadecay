@@ -105,7 +105,7 @@ def ignore_episode(show_slug: str, season: int, episode: int):
 
 def refresh_show(show_slug: str):
     """Trigger a show refresh to clear stale file info."""
-    url, headers, verify = _base()
+    url, _headers, verify = _base()
     cfg = get_config()["medusa"]
     # Extract TVDB ID from slug (e.g., "tvdb448176" -> 448176)
     tvdb_id = show_slug.replace("tvdb", "")
@@ -129,7 +129,7 @@ def get_root_folders() -> list[str]:
     return sorted(folders)
 
 
-def add_show(tvdb_id: int, location: str, anime: bool = False, show_list: str = None, default_status: str = "Wanted"):
+def add_show(tvdb_id: int, location: str, anime: bool = False, show_list: str | None = None, default_status: str = "Wanted"):
     """Add a show to Medusa, then patch its config (Medusa ignores config at add time)."""
     url, headers, verify = _base()
 

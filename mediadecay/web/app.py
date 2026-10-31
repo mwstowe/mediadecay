@@ -11,7 +11,7 @@ from flask import Flask, flash, redirect, render_template, request, session, url
 from mediadecay.config import get_config, load_config
 from mediadecay.db import get_session, init_db
 from mediadecay.engine import run_evaluation, sync_managed_media
-from mediadecay.models import ActionLog, ManagedMedia, Rule, Trigger
+from mediadecay.models import ActionLog, Rule, Trigger
 from mediadecay.clients import sonarr, radarr, medusa
 
 from sqlalchemy import select, desc
@@ -28,6 +28,82 @@ def _int_or(value, default):
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+# Declarative config-form schema: (section, key, label, kind, secret)
+#   kind: text | int | bool | password | select:<opt,opt,...>
+_CONFIG_SCHEMA = [
+    ("plex", "url", "Plex URL", "text", False),
+    ("plex", "token", "Plex Token", "password", True),
+    ("sonarr", "url", "Sonarr URL", "text", False),
+    ("sonarr", "api_key", "Sonarr API Key", "password", True),
+    ("radarr", "url", "Radarr URL", "text", False),
+    ("radarr", "api_key", "Radarr API Key", "password", True),
+    ("medusa", "url", "Medusa URL", "text", False),
+    ("medusa", "api_key", "Medusa API Key", "password", True),
+    ("medusa", "verify_ssl", "Verify Medusa TLS certificate", "bool", False),
+    ("ombi", "url", "Ombi URL", "text", False),
+    ("ombi", "api_key", "Ombi API Key", "password", True),
+    ("web", "base_url", "Base URL (for email links)", "text", False),
+    ("web", "port", "Web port", "int", False),
+    ("web", "ssl_cert", "SSL certificate path", "text", False),
+    ("web", "ssl_key", "SSL key path", "text", False),
+    ("notifications", "enabled", "Notifications enabled", "bool", False),
+    ("notifications", "method", "Method", "select:email,discord", False),
+    ("maintenance", "dry_run", "Dry run (preview only, no deletions)", "bool", False),
+    ("maintenance", "schedule", "Daily schedule (HH:MM)", "text", False),
+    ("maintenance", "remove_empty_collections", "Remove empty Plex collections", "bool", False),
+    ("maintenance", "log_file", "Log file path", "text", False),
+]
+# Email notification subfields live under notifications.email
+_EMAIL_SCHEMA = [
+    ("from", "From address", "text", False),
+    ("admin", "Admin recipient", "text", False),
+    ("smtp_host", "SMTP host", "text", False),
+    ("smtp_port", "SMTP port", "int", False),
+    ("smtp_tls", "SMTP TLS mode", "select:,starttls,ssl,none", False),
+    ("smtp_user", "SMTP username", "text", False),
+    ("smtp_pass", "SMTP password", "password", True),
+]
+
+
+def _config_field_name(section, key):
+    return f"cfg__{section}__{key}"
+
+
+def _build_config_view(cfg):
+    """Produce a template-friendly structure from the config dict."""
+    by_section = {}
+    for section, key, label, kind, secret in _CONFIG_SCHEMA:
+        val = cfg.get(section, {}).get(key)
+        by_section.setdefault(section, []).append({
+            "name": _config_field_name(section, key), "label": label, "kind": kind,
+            "secret": secret, "has_value": bool(val),
+            "value": "" if secret else ("" if val is None else val),
+            "checked": bool(val) if kind == "bool" else False,
+            "options": kind.split(":", 1)[1].split(",") if kind.startswith("select") else [],
+            "selected": cfg.get(section, {}).get(key) or "",
+        })
+    email = cfg.get("notifications", {}).get("email", {}) or {}
+    email_fields = []
+    for key, label, kind, secret in _EMAIL_SCHEMA:
+        val = email.get(key)
+        email_fields.append({
+            "name": f"email__{key}", "label": label, "kind": kind,
+            "secret": secret, "has_value": bool(val),
+            "value": "" if secret else ("" if val is None else val),
+            "options": kind.split(":", 1)[1].split(",") if kind.startswith("select") else [],
+            "selected": email.get(key) or "",
+        })
+    discord = cfg.get("notifications", {}).get("discord", {}) or {}
+    return {
+        "by_section": by_section,
+        "email_fields": email_fields,
+        "discord_has_webhook": bool(discord.get("webhook_url")),
+        "user_tokens": cfg.get("plex", {}).get("user_tokens", {}) or {},
+        "user_emails": cfg.get("plex", {}).get("user_emails", {}) or {},
+        "excluded_libraries": cfg.get("maintenance", {}).get("excluded_libraries", []) or [],
+    }
 
 
 def create_app() -> Flask:
@@ -717,9 +793,6 @@ def create_app() -> Flask:
         db = get_session()
         # Get ALL existing rules to exclude items that already have rules
         all_rules = db.execute(select(Rule)).scalars().all()
-        existing_external_ids = {r.external_id for r in all_rules if r.external_id}
-        existing_titles = {r.media_title.lower() for r in all_rules if r.media_title}
-        existing_plex_keys = {r.plex_rating_key for r in all_rules if r.plex_rating_key}
         # Build lookup: external_id or title -> rule_id and plex_rating_key
         rule_by_ext = {r.external_id: r.id for r in all_rules if r.external_id}
         rule_by_title = {r.media_title.lower(): r.id for r in all_rules if r.media_title}
@@ -962,45 +1035,11 @@ def create_app() -> Flask:
         from mediadecay.config import get_config, load_config, validate_config
         config_path = os.environ.get("MEDIACLEANER_CONFIG", "config.yaml")
         SECRET_SENTINEL = "__KEEP__"  # blank password field => keep existing value
-
-        # Declarative schema: (section, key, label, kind, secret)
-        # kind: text | int | bool | password | select:<opt,opt,...>
-        SCHEMA = [
-            ("plex", "url", "Plex URL", "text", False),
-            ("plex", "token", "Plex Token", "password", True),
-            ("sonarr", "url", "Sonarr URL", "text", False),
-            ("sonarr", "api_key", "Sonarr API Key", "password", True),
-            ("radarr", "url", "Radarr URL", "text", False),
-            ("radarr", "api_key", "Radarr API Key", "password", True),
-            ("medusa", "url", "Medusa URL", "text", False),
-            ("medusa", "api_key", "Medusa API Key", "password", True),
-            ("medusa", "verify_ssl", "Verify Medusa TLS certificate", "bool", False),
-            ("ombi", "url", "Ombi URL", "text", False),
-            ("ombi", "api_key", "Ombi API Key", "password", True),
-            ("web", "base_url", "Base URL (for email links)", "text", False),
-            ("web", "port", "Web port", "int", False),
-            ("web", "ssl_cert", "SSL certificate path", "text", False),
-            ("web", "ssl_key", "SSL key path", "text", False),
-            ("notifications", "enabled", "Notifications enabled", "bool", False),
-            ("notifications", "method", "Method", "select:email,discord", False),
-            ("maintenance", "dry_run", "Dry run (preview only, no deletions)", "bool", False),
-            ("maintenance", "schedule", "Daily schedule (HH:MM)", "text", False),
-            ("maintenance", "remove_empty_collections", "Remove empty Plex collections", "bool", False),
-            ("maintenance", "log_file", "Log file path", "text", False),
-        ]
-        # Email notification subfields live under notifications.email
-        EMAIL_SCHEMA = [
-            ("from", "From address", "text", False),
-            ("admin", "Admin recipient", "text", False),
-            ("smtp_host", "SMTP host", "text", False),
-            ("smtp_port", "SMTP port", "int", False),
-            ("smtp_tls", "SMTP TLS mode", "select:,starttls,ssl,none", False),
-            ("smtp_user", "SMTP username", "text", False),
-            ("smtp_pass", "SMTP password", "password", True),
-        ]
+        SCHEMA = _CONFIG_SCHEMA
+        EMAIL_SCHEMA = _EMAIL_SCHEMA
 
         def _field_name(section, key):
-            return f"cfg__{section}__{key}"
+            return _config_field_name(section, key)
 
         def _section_submitted(section):
             # Hidden marker emitted once per rendered section (see template),
@@ -1017,41 +1056,7 @@ def create_app() -> Flask:
             return (raw.strip() or None) if raw is not None else None
 
         def _build_view(cfg):
-            """Produce a template-friendly structure from the config dict."""
-            by_section = {}
-            for section, key, label, kind, secret in SCHEMA:
-                val = cfg.get(section, {}).get(key)
-                by_section.setdefault(section, []).append({
-                    "name": _field_name(section, key), "label": label, "kind": kind,
-                    "secret": secret, "has_value": bool(val),
-                    "value": "" if secret else ("" if val is None else val),
-                    "checked": bool(val) if kind == "bool" else False,
-                    "options": kind.split(":", 1)[1].split(",") if kind.startswith("select") else [],
-                    "selected": cfg.get(section, {}).get(key) or "",
-                })
-            email = cfg.get("notifications", {}).get("email", {}) or {}
-            email_fields = []
-            for key, label, kind, secret in EMAIL_SCHEMA:
-                val = email.get(key)
-                email_fields.append({
-                    "name": f"email__{key}", "label": label, "kind": kind,
-                    "secret": secret, "has_value": bool(val),
-                    "value": "" if secret else ("" if val is None else val),
-                    "options": kind.split(":", 1)[1].split(",") if kind.startswith("select") else [],
-                    "selected": email.get(key) or "",
-                })
-            discord = cfg.get("notifications", {}).get("discord", {}) or {}
-            user_tokens = cfg.get("plex", {}).get("user_tokens", {}) or {}
-            user_emails = cfg.get("plex", {}).get("user_emails", {}) or {}
-            excluded = cfg.get("maintenance", {}).get("excluded_libraries", []) or []
-            return {
-                "by_section": by_section,
-                "email_fields": email_fields,
-                "discord_has_webhook": bool(discord.get("webhook_url")),
-                "user_tokens": user_tokens,
-                "user_emails": user_emails,
-                "excluded_libraries": excluded,
-            }
+            return _build_config_view(cfg)
 
         def _apply_form(cfg):
             """Merge submitted form values onto cfg (in place)."""
@@ -1072,7 +1077,10 @@ def create_app() -> Flask:
                         cfg.setdefault(section, {})[key] = submitted
                     # blank/sentinel => keep existing (do nothing)
                     continue
-                val = _coerce(kind, request.form.get(fname))
+                raw = request.form.get(fname)
+                if kind == "int" and (raw is None or raw.strip() == ""):
+                    continue  # blank numeric field => keep existing value
+                val = _coerce(kind, raw)
                 if val is None:
                     cfg.setdefault(section, {}).pop(key, None)
                 else:
@@ -1089,7 +1097,10 @@ def create_app() -> Flask:
                         continue
                     if f"email__{key}" not in request.form:
                         continue
-                    val = _coerce(kind, request.form.get(f"email__{key}"))
+                    raw = request.form.get(f"email__{key}")
+                    if kind == "int" and (raw is None or raw.strip() == ""):
+                        continue  # blank numeric field => keep existing
+                    val = _coerce(kind, raw)
                     if val is None:
                         cfg["notifications"]["email"].pop(key, None)
                     else:
@@ -1211,7 +1222,6 @@ def create_app() -> Flask:
     @login_required
     def config_test_connections():
         from mediadecay.clients import plex as plex_client, sonarr, radarr, medusa, ombi
-        import json
         results = {}
         tests = {
             "plex": lambda: plex_client._server().friendlyName,
@@ -1226,7 +1236,9 @@ def create_app() -> Flask:
                 results[name] = {"ok": True, "detail": str(result)}
             except Exception as e:
                 results[name] = {"ok": False, "detail": str(e)}
-        return render_template("config.html", config_yaml=None, test_results=results)
+        from mediadecay.config import get_config
+        return render_template("config.html", view=_build_config_view(get_config()),
+                               secret_sentinel="__KEEP__", test_results=results)
 
     @app.route("/confirm/snooze/<token>", methods=["GET", "POST"])
     def confirm_snooze(token):

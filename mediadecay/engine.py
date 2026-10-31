@@ -1483,11 +1483,11 @@ def _move_sonarr_to_medusa(result: EvalResult, dest: str):
     is_anime = "anime" in dest.lower()
     try:
         medusa.add_show(tvdb_id, new_path, anime=is_anime)
-    except Exception as e:
+    except Exception:
         # Rollback: move files back, and re-monitor the Sonarr series we
         # unmonitored above so it isn't left in a half-moved state.
         _safe_rollback_move(new_path, old_path, result.title)
-        raise e
+        raise
 
     # Step 3: Remove from Sonarr (safe — Medusa now has it)
     sonarr.delete_series(int(result.manager_id), delete_files=False)
@@ -1521,7 +1521,7 @@ def _move_sonarr_to_medusa(result: EvalResult, dest: str):
 
 def _move_medusa_to_sonarr(result: EvalResult, dest: str):
     """Move from Medusa to Sonarr. Safe order: verify, move files, add to Sonarr, remove from Medusa."""
-    import os, shutil, requests
+    import shutil, requests
     from mediadecay.config import get_config
 
     # Verify Sonarr is reachable
@@ -1573,7 +1573,7 @@ def _move_medusa_to_sonarr(result: EvalResult, dest: str):
     except Exception as e:
         # Rollback: move files back
         _safe_rollback_move(new_path, old_path, result.title)
-        raise e
+        raise
 
     # Step 3: Remove from Medusa (safe — Sonarr now has it)
     medusa.delete_show(show_slug, remove_files=False)
@@ -1681,7 +1681,7 @@ def _move_medusa_to_medusa(result: EvalResult, dest: str):
         src_status = show_info.get("config", {}).get("defaultEpisodeStatus", "Wanted")
         src_list = (show_info.get("config", {}).get("showLists") or [None])[0]
         medusa.add_show(tvdb_id, new_path, anime=is_anime, show_list=src_list, default_status=src_status)
-    except Exception as e:
+    except Exception:
         # Rollback: move files back and re-add at old location. The show was
         # already removed from Medusa above, so re-adding is required to restore
         # management — surface a loud error if that fails.
@@ -1698,7 +1698,7 @@ def _move_medusa_to_medusa(result: EvalResult, dest: str):
             log.error(f"ROLLBACK INCOMPLETE for {result.title}: files restored to "
                       f"{old_path} but re-adding to Medusa failed: {re_add_err}. "
                       f"The show must be re-added to Medusa manually.")
-        raise e
+        raise
 
 
 def _path_to_manager(path: str) -> str:
@@ -1955,14 +1955,14 @@ def _handle_pending_confirm(session, rule: Rule, trigger: Trigger | None, rating
     ))
     session.flush()
 
-    recipient = _send_confirmation_email(rule, trigger, title, token)
+    recipient_sent, notified_to = _send_confirmation_email(rule, trigger, title, token)
     # Store where we sent the notification and mark as sent
     pa = session.execute(
         select(PendingAction).where(PendingAction.token == token)
     ).scalar_one_or_none()
     if pa:
-        if recipient:
-            pa.notified_to = recipient
+        if recipient_sent:
+            pa.notified_to = notified_to
             pa.notification_sent = True
             # Only start countdown from when notification was confirmed sent
             pa.notified_at = datetime.now(timezone.utc)
@@ -1972,7 +1972,13 @@ def _handle_pending_confirm(session, rule: Rule, trigger: Trigger | None, rating
 
 
 def _send_confirmation_email(rule: Rule, trigger: Trigger | None, title: str, token: str):
-    """Send confirmation email listing available methods from trigger.confirm_methods."""
+    """Send confirmation email listing available methods from trigger.confirm_methods.
+
+    Returns (sent, notified_to): `sent` is True if a notification was dispatched
+    without error (including the admin-fallback path when no specific user email
+    is resolved); `notified_to` is the recipient address when known, else None.
+    A False `sent` means the caller must NOT start the deletion countdown.
+    """
     from mediadecay.config import get_config
     cfg = get_config()
     base_url = cfg["web"].get("base_url", f"https://localhost:{cfg['web'].get('port', 9393)}")
@@ -2017,18 +2023,20 @@ def _send_confirmation_email(rule: Rule, trigger: Trigger | None, title: str, to
             if recipients:
                 for r in recipients:
                     notify.send_to(subject, body, r)
-                return recipients[0]
+                return True, recipients[0]
         if recipient:
             notify.send_to(subject, body, recipient)
-            return recipient
-        else:
-            notify.send(subject, body)
-            return None
+            return True, recipient
+        # No specific recipient resolved — fall back to the admin notification.
+        # This still counts as "sent"; there is just no per-user address to
+        # record for a later "kept" email.
+        notify.send(subject, body)
+        return True, None
     except Exception as e:
         # A failed send must NOT be reported as sent, so the caller leaves the
         # expiry timer unstarted and retries on the next run.
         log.error(f"Failed to send confirmation email for {title}: {e}")
-        return None
+        return False, None
 
 
 def _send_kept_notification(pa: PendingAction, action_taken: str):
