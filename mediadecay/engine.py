@@ -1590,8 +1590,15 @@ def _remove_empty_shows(report: EngineReport):
                 eps = item.episodes() if hasattr(item, "episodes") else []
                 if eps:
                     continue  # Still has episodes, skip
-            except Exception:
-                pass  # Item not found in Plex = already gone, proceed
+            except NotFound:
+                pass  # Definitively gone from Plex = empty, proceed to remove
+            except Exception as e:
+                # Transient error (Plex down, timeout) is NOT proof the show is
+                # empty. Fail closed: skip this rule rather than risk removing a
+                # whole show (with delete_files=True) on a network blip.
+                log.warning(f"Skipping empty-show check for {rule.media_title}: "
+                            f"could not verify Plex state: {e}")
+                continue
 
             # Check if_ended condition using the managing app directly
             if rule.remove_show_when_empty == "if_ended":
@@ -1677,19 +1684,26 @@ def _delete_direct(result: EvalResult):
         paths = plex.get_file_paths(plex_item)
         # Validate paths are within known library locations
         library_roots = set()
+        roots_known = False
         try:
             for section in server.library.sections():
                 for loc in section.locations:
                     library_roots.add(loc.rstrip("/"))
-        except Exception:
-            pass
+            roots_known = True
+        except Exception as e:
+            log.warning(f"Could not enumerate Plex library roots: {e}")
+        # Fail closed: without a known set of library roots we cannot verify a
+        # path is safe to delete, so refuse rather than deleting unvalidated.
+        if not roots_known or not library_roots:
+            log.warning(f"Refusing direct delete of {result.title}: library roots "
+                        f"could not be determined — cannot validate paths are safe.")
+            return
         for path in paths:
             # Safety check: path must be under a known library root
-            if library_roots:
-                path_real = os.path.realpath(path)
-                if not any(path_real.startswith(root + "/") or path_real == root for root in library_roots):
-                    log.warning(f"Path {path} is not under any known library root. Skipping.")
-                    continue
+            path_real = os.path.realpath(path)
+            if not any(path_real.startswith(root + "/") or path_real == root for root in library_roots):
+                log.warning(f"Path {path} is not under any known library root. Skipping.")
+                continue
             if os.path.isdir(path):
                 shutil.rmtree(path)
                 log.info(f"Removed directory: {path}")
