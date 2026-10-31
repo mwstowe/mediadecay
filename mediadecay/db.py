@@ -1,9 +1,13 @@
 from contextlib import contextmanager
 
+import logging
+
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from mediadecay.config import get_config
+
+log = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -90,91 +94,85 @@ def init_db():
 
 
 def _migrate():
-    """Add missing columns/tables to existing database."""
+    """Apply additive schema migrations to an existing database.
+
+    Base.metadata.create_all() (called in init_db before this) already creates
+    any missing *tables*, so here we only need to add columns that were
+    introduced after a table first existed, plus a one-time data migration.
+
+    This is intentionally lightweight (no Alembic): it is idempotent via
+    PRAGMA table_info existence checks, isolates each step so one failure
+    doesn't abort the rest, sets a busy_timeout so it waits rather than
+    erroring under concurrent access, and records a schema_version marker.
+    """
     import sqlite3
+    from contextlib import closing
+
+    # Current additive-migration revision. Bump when adding a new _add_col/step.
+    SCHEMA_VERSION = 1
+
     cfg = get_config()
     db_path = cfg.get("database", {}).get("path", "mediadecay.db")
-    conn = sqlite3.connect(db_path)
 
-    def _add_col(table, col, coltype, default=None):
-        existing = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
-        if col not in existing:
-            defstr = f" DEFAULT {default}" if default is not None else ""
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}{defstr}")
+    with closing(sqlite3.connect(db_path, timeout=30)) as conn:
+        conn.execute("PRAGMA busy_timeout=30000")
 
-    # Ensure triggers table exists
-    tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-    if "triggers" not in tables:
-        conn.execute("""CREATE TABLE triggers (
-            id INTEGER PRIMARY KEY,
-            rule_id INTEGER REFERENCES rules(id),
-            type VARCHAR NOT NULL,
-            days INTEGER DEFAULT 7,
-            action VARCHAR DEFAULT 'delete',
-            confirm_days INTEGER DEFAULT 7,
-            confirm_methods VARCHAR DEFAULT 'snooze',
-            confirm_email VARCHAR,
-            snoozed_until DATETIME,
-            enabled BOOLEAN DEFAULT 1
-        )""")
+        def _add_col(table, col, coltype, default=None):
+            try:
+                existing = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+                if not existing:
+                    return  # table doesn't exist (shouldn't happen post create_all)
+                if col not in existing:
+                    defstr = f" DEFAULT {default}" if default is not None else ""
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}{defstr}")
+            except sqlite3.OperationalError as e:
+                # Isolate: a single failing ALTER must not abort the whole run.
+                log.warning(f"Migration: could not add {table}.{col}: {e}")
 
-    # Rules table migrations
-    _add_col("rules", "processing_mode", "VARCHAR", "'episode'")
-    _add_col("rules", "remove_show_when_empty", "VARCHAR", "'if_ended'")
-    _add_col("rules", "snoozed_until", "DATETIME", "NULL")
-    _add_col("rules", "move_to", "VARCHAR", "NULL")
-    _add_col("rules", "tvdb_id", "INTEGER", "NULL")
-    _add_col("rules", "tmdb_id", "INTEGER", "NULL")
+        # Record a schema_version marker (informational; also lets us detect a
+        # database written by a newer version of the app).
+        conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
+        row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
+        current = row[0] if row and row[0] is not None else 0
+        if current > SCHEMA_VERSION:
+            log.warning(f"Database schema_version {current} is newer than this app "
+                        f"supports ({SCHEMA_VERSION}); proceeding read-compatibly.")
 
-    # Pending rules columns
-    _add_col("rules", "external_id", "VARCHAR", "NULL")
-    _add_col("rules", "external_source", "VARCHAR", "NULL")
+        # Rules table migrations
+        _add_col("rules", "processing_mode", "VARCHAR", "'episode'")
+        _add_col("rules", "remove_show_when_empty", "VARCHAR", "'if_ended'")
+        _add_col("rules", "snoozed_until", "DATETIME", "NULL")
+        _add_col("rules", "move_to", "VARCHAR", "NULL")
+        _add_col("rules", "tvdb_id", "INTEGER", "NULL")
+        _add_col("rules", "tmdb_id", "INTEGER", "NULL")
+        _add_col("rules", "external_id", "VARCHAR", "NULL")
+        _add_col("rules", "external_source", "VARCHAR", "NULL")
 
-    # PendingAction migrations
-    _add_col("pending_actions", "trigger_id", "INTEGER", "NULL")
-    _add_col("pending_actions", "notified_to", "VARCHAR", "NULL")
+        # PendingAction migrations
+        _add_col("pending_actions", "trigger_id", "INTEGER", "NULL")
+        _add_col("pending_actions", "notified_to", "VARCHAR", "NULL")
+        _add_col("pending_actions", "notification_sent", "BOOLEAN", "0")
 
-    # Trigger migrations
-    _add_col("triggers", "move_to", "VARCHAR", "NULL")
+        # Trigger migrations
+        _add_col("triggers", "move_to", "VARCHAR", "NULL")
 
-    # Migrate Rule.action: delete/move → manage, push move_to to triggers
-    existing_rules = [r[1] for r in conn.execute("PRAGMA table_info(rules)").fetchall()]
-    if "move_to" in existing_rules:
-        # Migrate move rules: set trigger.move_to from rule.move_to
-        rows = conn.execute("SELECT id, move_to FROM rules WHERE action='move' AND move_to IS NOT NULL").fetchall()
-        for rule_id, move_to in rows:
-            conn.execute("UPDATE triggers SET move_to=?, action='move' WHERE rule_id=?", (move_to, rule_id))
-        # Convert delete/move actions to manage
-        conn.execute("UPDATE rules SET action='manage' WHERE action IN ('delete', 'move')")
+        # One-time data migration: Rule.action delete/move -> manage, pushing
+        # move_to down to triggers. Self-neutralizing after the first run.
+        try:
+            existing_rules = [r[1] for r in conn.execute("PRAGMA table_info(rules)").fetchall()]
+            if "move_to" in existing_rules:
+                rows = conn.execute(
+                    "SELECT id, move_to FROM rules WHERE action='move' AND move_to IS NOT NULL"
+                ).fetchall()
+                for rule_id, move_to in rows:
+                    conn.execute("UPDATE triggers SET move_to=?, action='move' WHERE rule_id=?",
+                                 (move_to, rule_id))
+                conn.execute("UPDATE rules SET action='manage' WHERE action IN ('delete', 'move')")
+        except sqlite3.OperationalError as e:
+            log.warning(f"Migration: action/move_to data migration skipped: {e}")
 
-    # Maintenance runs table (Fix #8)
-    if "maintenance_runs" not in tables:
-        conn.execute("""CREATE TABLE maintenance_runs (
-            id INTEGER PRIMARY KEY,
-            started_at DATETIME NOT NULL,
-            completed_at DATETIME,
-            status VARCHAR NOT NULL,
-            error TEXT,
-            summary TEXT
-        )""")
+        if current < SCHEMA_VERSION:
+            conn.execute("DELETE FROM schema_version")
+            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
 
-    # Move states table (Fix #4)
-    if "move_states" not in tables:
-        conn.execute("""CREATE TABLE move_states (
-            id INTEGER PRIMARY KEY,
-            started_at DATETIME NOT NULL,
-            media_title VARCHAR NOT NULL,
-            plex_rating_key VARCHAR NOT NULL,
-            source_manager VARCHAR NOT NULL,
-            source_path VARCHAR NOT NULL,
-            dest_manager VARCHAR NOT NULL,
-            dest_path VARCHAR NOT NULL,
-            status VARCHAR NOT NULL,
-            error TEXT
-        )""")
-
-    # PendingAction notification_sent column (Fix #9)
-    _add_col("pending_actions", "notification_sent", "BOOLEAN", "0")
-
-    conn.commit()
-    conn.close()
+        conn.commit()
