@@ -161,8 +161,8 @@ web:
   admin_password: "$2b$12$..."  # bcrypt hash
   base_url: "https://mediadecay.example.com:9393"
   port: 9393
-  ssl_cert: /opt/mediadecay/ssl/fullchain.pem
-  ssl_key: /opt/mediadecay/ssl/privkey.pem
+  ssl_cert: /etc/mediadecay/ssl/fullchain.pem
+  ssl_key: /etc/mediadecay/ssl/privkey.pem
 ```
 
 Generate a password hash:
@@ -193,76 +193,160 @@ notifications:
 maintenance:
   dry_run: false
   schedule: "03:00"
-  log_file: /var/log/mediadecay.log
+  log_file: /var/log/mediadecay/mediadecay.log
   remove_empty_collections: true   # delete Plex collections that have no members
   excluded_libraries:
     - "3D Movies"
 ```
 
+The database path defaults to `mediadecay.db` relative to the working
+directory. For a packaged install, set it explicitly:
+
+```yaml
+database:
+  path: /var/lib/mediadecay/mediadecay.db
+```
+
 ## Installation
 
-### Dependencies
+MediaDecay installs as a Python package providing two entry points,
+`mediadecay-web` (web UI + scheduler) and `mediadecay-maintenance` (CLI
+maintenance run). There are two supported install paths: a Gentoo ebuild
+(recommended on Gentoo) and a manual install anywhere else.
 
-Gentoo:
+> **Important — which user runs it:** MediaDecay deletes and moves your media
+> files, so the service **must run as the user/group that owns those files**
+> (for example `sabnzbd`, `plex`, or a dedicated `media` user). This is the one
+> setting you must get right regardless of install method.
+
+### Option A — Gentoo (ebuild)
+
+MediaDecay is packaged as `media-video/mediadecay` in the
+[stowe-verlay](https://github.com/mwstowe/stowe-verlay) overlay. The overlay
+also ships `dev-python/PlexAPI`, so no additional overlay is required.
+
 ```bash
-sudo emerge -av flask sqlalchemy pyyaml ruamel-yaml requests bcrypt PlexAPI cheroot
+# 1. Add the overlay (if not already present), then sync.
+#    (eselect repository needs app-eselect/eselect-repository)
+sudo eselect repository add stowe-verlay git https://github.com/mwstowe/stowe-verlay.git
+sudo emerge --sync stowe-verlay
 ```
 
-`dev-python/PlexAPI` is provided by the `ha-bleeding-edge` overlay; the rest are
-in the main tree. `dev-python/cheroot` is the production WSGI server MediaDecay
-serves with (see Running). `dev-python/ruamel-yaml` lets the web config editor
-save `config.yaml` without discarding comments.
+(No `eselect-repository`? Add it manually by creating
+`/etc/portage/repos.conf/stowe-verlay.conf` with a `[stowe-verlay]` section
+pointing `sync-uri` at the repo, then `emerge --sync stowe-verlay`.)
 
-Other systems (pip):
 ```bash
+# 2. Accept the ~arch keywords (overlay packages are ~amd64)
+sudo tee /etc/portage/package.accept_keywords/mediadecay >/dev/null <<'EOF'
+media-video/mediadecay ~amd64
+dev-python/PlexAPI ~amd64
+EOF
+
+# 3. Install
+sudo emerge -av media-video/mediadecay
+```
+
+The ebuild pulls every dependency, installs the code into site-packages, creates
+`/etc/mediadecay`, `/var/lib/mediadecay`, and `/var/log/mediadecay`, and installs
+both a systemd unit and an OpenRC service.
+
+**Runtime user via the `sabnzbd` USE flag.** The package defaults to
+`USE="sabnzbd"`: it depends on the sabnzbd account, owns the data/log dirs as
+`sabnzbd`, and drops in `User=sabnzbd`/`Group=sabnzbd` for the systemd unit. If
+your media is owned by a different user, build with `USE="-sabnzbd"` and set the
+runtime user yourself (see the post-install notes and "Choosing the runtime
+user" below).
+
+Then configure (see [Configuration](#configuration)):
+
+```bash
+sudo cp /etc/mediadecay/config.yaml.example /etc/mediadecay/config.yaml
+sudo $EDITOR /etc/mediadecay/config.yaml
+# Set database.path: /var/lib/mediadecay/mediadecay.db and your credentials.
+# Secure it — it contains secrets:
+sudo chown root:sabnzbd /etc/mediadecay/config.yaml   # use your runtime group
+sudo chmod 0640 /etc/mediadecay/config.yaml
+```
+
+Updating later is just `sudo emerge --sync stowe-verlay && sudo emerge -u1 media-video/mediadecay`.
+
+### Option B — manual install (any OS, pip)
+
+Install the package and its dependencies, then set up the directories, config,
+and a service yourself.
+
+```bash
+# 1. Install dependencies + MediaDecay (from a release tag or a checkout)
 pip install flask sqlalchemy pyyaml ruamel.yaml requests bcrypt plexapi cheroot
+pip install git+https://github.com/mwstowe/mediadecay.git@v1.0.0
+# (or, from a local checkout:  pip install .)
+
+# 2. Create the directories, owned by the user that owns your media
+sudo install -d -o MEDIAUSER -g MEDIAGROUP -m 0750 /var/lib/mediadecay /var/log/mediadecay
+sudo install -d -o root -g MEDIAGROUP -m 0750 /etc/mediadecay
+
+# 3. Configuration
+sudo cp config.yaml.example /etc/mediadecay/config.yaml
+sudo $EDITOR /etc/mediadecay/config.yaml          # set credentials + database.path
+sudo chown root:MEDIAGROUP /etc/mediadecay/config.yaml
+sudo chmod 0640 /etc/mediadecay/config.yaml
 ```
 
-### Deploy
+Create a systemd unit at `/etc/systemd/system/mediadecay.service` (replace
+`MEDIAUSER`/`MEDIAGROUP` with the account that owns your media):
 
-```bash
-sudo mkdir -p /opt/mediadecay
-sudo git clone https://github.com/mwstowe/mediadecay.git /opt/mediadecay
-sudo chown -R sabnzbd:sabnzbd /opt/mediadecay
-cp /opt/mediadecay/config.yaml.example /opt/mediadecay/config.yaml
-# Edit config.yaml with your credentials
-```
-
-To update:
-```bash
-cd /opt/mediadecay && sudo -u sabnzbd git pull
-sudo systemctl restart mediadecay
-```
-
-Create the systemd service at `/etc/systemd/system/mediadecay.service`:
 ```ini
 [Unit]
-Description=MediaDecay Web UI
-After=network.target plex-media-server.service medusa.service sonarr.service radarr.service ombi.service
-Requires=plex-media-server.service
-Wants=medusa.service sonarr.service radarr.service ombi.service
+Description=MediaDecay — media lifecycle management for Plex
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=sabnzbd
-Group=sabnzbd
-WorkingDirectory=/opt/mediadecay
-ExecStart=/usr/bin/python3.13 -m mediadecay.web.app
+User=MEDIAUSER
+Group=MEDIAGROUP
+Environment=MEDIACLEANER_CONFIG=/etc/mediadecay/config.yaml
+WorkingDirectory=/var/lib/mediadecay
+ExecStart=/usr/bin/mediadecay-web
 Restart=on-failure
 RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Adjust the `After`/`Requires`/`Wants` service names to match your system (or drop the ones you don't run).
+`MEDIACLEANER_CONFIG` tells MediaDecay where the config lives (it otherwise looks
+for `config.yaml` in the working directory). If `pip` installed the entry points
+somewhere other than `/usr/bin` (e.g. a virtualenv), adjust `ExecStart`
+accordingly — or run `python -m mediadecay.web.app`.
+
+### Choosing the runtime user
+
+MediaDecay must run as the account that owns the media it manages, or deletes
+and moves will fail with permission errors (the move pre-flight check refuses a
+destination it cannot write). Point the service at that user:
+
+- **systemd:** `sudo systemctl edit mediadecay` and add, under `[Service]`,
+  `User=youruser` and `Group=yourgroup`.
+- **OpenRC:** set `MEDIADECAY_USER` / `MEDIADECAY_GROUP` in
+  `/etc/conf.d/mediadecay`.
+
+Also ensure `/var/lib/mediadecay`, `/var/log/mediadecay`, and the config file
+are owned/readable by that user.
 
 ## Running
 
-The systemd service runs both the web UI and the scheduled maintenance:
+Enable and start the service (it runs both the web UI and the scheduled
+maintenance):
 
 ```bash
+# systemd
 sudo systemctl enable --now mediadecay
+# OpenRC
+sudo rc-update add mediadecay default && sudo rc-service mediadecay start
 ```
 
 Access the web UI at `https://your-host:9393`.
@@ -276,17 +360,18 @@ depend on; do not run multiple instances against the same database.
 For local development, `--dev` swaps cheroot for Flask's Werkzeug server
 (auto-reloader and debugger). Do not use `--dev` in production:
 ```bash
-python3 -m mediadecay.web.app --dev
+mediadecay-web --dev
 ```
 
 ### Manual Maintenance
 
 From the web UI: **Maintenance** → **Preview (Dry Run)** or **Run Now (Live)**.
 
-From the command line:
+From the command line (runs as whatever user owns the media/config — use
+`sudo -u` to match your runtime user):
 ```bash
-sudo -u sabnzbd python3.13 -m mediadecay.maintenance --dry-run
-sudo -u sabnzbd python3.13 -m mediadecay.maintenance
+sudo -u MEDIAUSER MEDIACLEANER_CONFIG=/etc/mediadecay/config.yaml mediadecay-maintenance --dry-run
+sudo -u MEDIAUSER MEDIACLEANER_CONFIG=/etc/mediadecay/config.yaml mediadecay-maintenance
 ```
 
 ## Web UI Pages
