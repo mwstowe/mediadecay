@@ -4,8 +4,8 @@
 
 description="MediaDecay — media lifecycle management for Plex"
 
-: ${MEDIADECAY_USER:=mediadecay}
-: ${MEDIADECAY_GROUP:=mediadecay}
+: ${MEDIADECAY_USER:=sabnzbd}
+: ${MEDIADECAY_GROUP:=sabnzbd}
 : ${MEDIADECAY_CONFIG:=/etc/mediadecay/config.yaml}
 : ${MEDIADECAY_DATADIR:=/var/lib/mediadecay}
 : ${MEDIADECAY_LOGFILE:=/var/log/mediadecay/mediadecay.log}
