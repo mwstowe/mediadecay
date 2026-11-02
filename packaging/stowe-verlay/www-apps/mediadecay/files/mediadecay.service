@@ -1,0 +1,24 @@
+[Unit]
+Description=MediaDecay — media lifecycle management for Plex
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mediadecay
+Group=mediadecay
+Environment=MEDIACLEANER_CONFIG=/etc/mediadecay/config.yaml
+WorkingDirectory=/var/lib/mediadecay
+ExecStart=/usr/bin/mediadecay-web
+Restart=on-failure
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/mediadecay /var/log/mediadecay /etc/mediadecay
+
+[Install]
+WantedBy=multi-user.target

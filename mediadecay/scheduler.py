@@ -43,10 +43,8 @@ def _run_loop(app, schedule_time):
 def _run_maintenance():
     from mediadecay.config import get_config
     from mediadecay.engine import (
-        execute_deletions, process_pending_actions, run_evaluation, sync_managed_media,
-        acquire_maintenance_lock, release_maintenance_lock, check_incomplete_moves,
+        run_maintenance_cycle, acquire_maintenance_lock, release_maintenance_lock,
     )
-    from mediadecay.engine import execute_moves, cleanup_orphaned_rules, activate_pending_rules
     from mediadecay import notify
     from mediadecay.db import session_scope
     from mediadecay.models import MaintenanceRun
@@ -76,19 +74,12 @@ def _run_maintenance():
 
         log.info(f"Scheduled maintenance starting (dry_run={dry_run})")
 
-        # Check for incomplete moves from previous crash
-        check_incomplete_moves()
-
-        sync_managed_media()
-        activated = activate_pending_rules()
-        report = run_evaluation(dry_run=dry_run)
-        expired_deletions = process_pending_actions(dry_run=dry_run)
-        if not dry_run:
-            execute_deletions(report)
-            execute_moves(report)
-
-        # Always clean up orphaned rules
-        orphaned_rules = cleanup_orphaned_rules()
+        # Single shared run sequence (same path as CLI and web UI).
+        outcome = run_maintenance_cycle(dry_run=dry_run)
+        report = outcome.report
+        activated = outcome.activated_rules
+        expired_deletions = outcome.expired_deletions
+        orphaned_rules = outcome.orphaned_rules
 
         deletions = [r for r in report.results if r.action == "delete"]
         moves = [r for r in report.results if r.action == "move"]

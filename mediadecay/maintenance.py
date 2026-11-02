@@ -6,7 +6,7 @@ import sys
 
 from mediadecay.config import load_config, get_config
 from mediadecay.db import init_db
-from mediadecay.engine import EngineReport, execute_deletions, run_evaluation, sync_managed_media, process_pending_actions, run_orphan_scan
+from mediadecay.engine import EngineReport, run_maintenance_cycle
 from mediadecay import notify
 
 log = logging.getLogger("mediadecay")
@@ -70,40 +70,24 @@ def main():
                       "(service or CLI). Aborting to avoid concurrent destructive runs.")
             sys.exit(1)
 
-        # Step 1: Sync managed media cache
-        log.info("Syncing managed media cache...")
+        # Run the single shared maintenance sequence (same path as the
+        # scheduler and web UI). scan_orphans=True so the CLI report can list
+        # orphaned media, matching its historical behavior.
         try:
-            sync_managed_media()
+            outcome = run_maintenance_cycle(dry_run=dry_run, scan_orphans=True)
         except Exception as e:
-            log.error(f"Failed to sync managed media: {e}")
+            log.error(f"Maintenance run failed: {e}")
             sys.exit(1)
+        report = outcome.report
 
-        # Step 2: Evaluate rules
-        log.info("Evaluating rules...")
-        report = run_evaluation(dry_run=dry_run)
-
-        # Step 3: Orphan scan (separate from rules)
-        log.info("Scanning for orphans...")
-        orphans = run_orphan_scan()
-        report.orphans = orphans
-
-        # Step 4: Process pending confirmations (check for cancellation or expiry)
-        log.info("Processing pending confirmations...")
-        process_pending_actions(dry_run=dry_run)
-
-        # Step 5: Execute deletions if not dry run
-        if not dry_run:
-            log.info("Executing deletions...")
-            execute_deletions(report)
-
-        # Step 6: Report
+        # Report
         summary = _format_report(report, dry_run)
         log.info(summary)
 
-        # Step 7: Notify
+        # Notify
         notify.send("MediaDecay Report", summary)
 
-        # Step 8: Checkpoint WAL to ensure all data is flushed to main DB
+        # Checkpoint WAL to ensure all data is flushed to main DB
         try:
             from mediadecay.db import checkpoint
             checkpoint()

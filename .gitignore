@@ -9,6 +9,7 @@ config.yaml
 .ruff_cache/
 deploy.sh
 context.json
+context.zip
 ssl/
 # Ignore Kiro directory (settings, local agent state, etc.)
 .kiro/

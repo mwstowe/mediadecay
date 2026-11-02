@@ -10,7 +10,7 @@ from flask import Flask, flash, redirect, render_template, request, session, url
 
 from mediadecay.config import get_config, load_config
 from mediadecay.db import get_session, init_db
-from mediadecay.engine import run_evaluation, sync_managed_media
+from mediadecay.engine import sync_managed_media
 from mediadecay.models import ActionLog, Rule, Trigger
 from mediadecay.clients import sonarr, radarr, medusa
 
@@ -104,6 +104,36 @@ def _build_config_view(cfg):
         "user_emails": cfg.get("plex", {}).get("user_emails", {}) or {},
         "excluded_libraries": cfg.get("maintenance", {}).get("excluded_libraries", []) or [],
     }
+
+
+def _rt_yaml():
+    """A ruamel round-trip YAML instance that preserves comments and key order."""
+    from ruamel.yaml import YAML
+    y = YAML(typ="rt")
+    y.preserve_quotes = True
+    # Keep the readable block style the example config uses.
+    y.default_flow_style = False
+    return y
+
+
+def _load_yaml_rt(path):
+    """Load a YAML file preserving comments/formatting for later round-trip save.
+
+    Returns a ruamel CommentedMap (dict-like). Missing/empty file yields {}.
+    """
+    from pathlib import Path
+    p = Path(path)
+    if not p.exists():
+        return _rt_yaml().load("{}\n")
+    with open(p) as f:
+        data = _rt_yaml().load(f)
+    return data if data is not None else _rt_yaml().load("{}\n")
+
+
+def _save_yaml_rt(path, data):
+    """Write a ruamel document back to disk, preserving its comments."""
+    with open(path, "w") as f:
+        _rt_yaml().dump(data, f)
 
 
 def create_app() -> Flask:
@@ -513,28 +543,19 @@ def create_app() -> Flask:
     _task = {"running": False, "report": None, "error": None, "mode": None}
 
     def _run_task(dry_run):
-        from mediadecay.engine import acquire_maintenance_lock, release_maintenance_lock
+        from mediadecay.engine import (
+            acquire_maintenance_lock, release_maintenance_lock, run_maintenance_cycle,
+        )
         if not acquire_maintenance_lock():
             with _task_lock:
                 _task["error"] = "Maintenance already running"
                 _task["running"] = False
             return
         try:
-            sync_managed_media()
-            report = run_evaluation(dry_run=dry_run)
-            if not dry_run:
-                from mediadecay.engine import (
-                    execute_deletions, execute_moves, process_pending_actions,
-                    check_incomplete_moves,
-                )
-                # Surface any moves left incomplete by a prior crash before
-                # starting new destructive work.
-                check_incomplete_moves()
-                process_pending_actions(dry_run=dry_run)
-                execute_deletions(report)
-                execute_moves(report)
+            # Single shared run sequence (same path as scheduler and CLI).
+            outcome = run_maintenance_cycle(dry_run=dry_run)
             with _task_lock:
-                _task["report"] = report
+                _task["report"] = outcome.report
         except Exception as e:
             with _task_lock:
                 _task["error"] = str(e)
@@ -1018,20 +1039,35 @@ def create_app() -> Flask:
     @login_required
     def plex_thumb():
 
-        """Proxy Plex thumbnails."""
+        """Proxy Plex thumbnails.
+
+        Restricts the proxied path to Plex image endpoints and sets a timeout so
+        a slow/hostile Plex response can't tie up a worker. The route is also
+        login-protected, but the path restriction limits what an authenticated
+        user can reach with the server's admin token.
+        """
         import requests as req
         thumb_path = request.args.get("path", "")
+        # Reject anything that isn't a plain absolute path, or that tries to
+        # smuggle a query string or traverse directories.
         if not thumb_path or not thumb_path.startswith("/") or "?" in thumb_path or ".." in thumb_path:
+            return "", 404
+        # Only allow Plex image/thumbnail endpoints — not arbitrary API paths.
+        _allowed_prefixes = ("/library/", "/photo/", "/pms_image_proxy")
+        if not thumb_path.startswith(_allowed_prefixes):
             return "", 404
         cfg_plex = get_config()["plex"]
         url = f"{cfg_plex['url']}{thumb_path}?X-Plex-Token={cfg_plex['token']}"
-        r = req.get(url)
+        try:
+            r = req.get(url, timeout=(10, 30))
+        except req.RequestException as e:
+            log.warning(f"plex_thumb fetch failed for {thumb_path}: {e}")
+            return "", 502
         return r.content, r.status_code, {"Content-Type": r.headers.get("Content-Type", "image/jpeg")}
 
     @app.route("/config", methods=["GET", "POST"])
     @login_required
     def config_edit():
-        import yaml
         from mediadecay.config import get_config, load_config, validate_config
         config_path = os.environ.get("MEDIACLEANER_CONFIG", "config.yaml")
         SECRET_SENTINEL = "__KEEP__"  # blank password field => keep existing value
@@ -1154,12 +1190,10 @@ def create_app() -> Flask:
 
         if request.method == "POST":
             try:
-                with open(config_path) as f:
-                    cfg = yaml.safe_load(f) or {}
+                cfg = _load_yaml_rt(config_path)
                 _apply_form(cfg)
                 validate_config(cfg)
-                with open(config_path, "w") as f:
-                    yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+                _save_yaml_rt(config_path, cfg)
                 load_config(config_path)
                 return render_template("config.html", view=_build_view(cfg),
                                        secret_sentinel=SECRET_SENTINEL,
@@ -1168,8 +1202,7 @@ def create_app() -> Flask:
             except Exception as e:
                 # Re-render with submitted values where possible, show the error.
                 try:
-                    with open(config_path) as f:
-                        cfg = yaml.safe_load(f) or {}
+                    cfg = _load_yaml_rt(config_path)
                     _apply_form(cfg)
                 except Exception:
                     cfg = get_config()
@@ -1177,25 +1210,21 @@ def create_app() -> Flask:
                                        secret_sentinel=SECRET_SENTINEL,
                                        error=f"Invalid config: {e}")
 
-        with open(config_path) as f:
-            cfg = yaml.safe_load(f) or {}
+        cfg = _load_yaml_rt(config_path)
         return render_template("config.html", view=_build_view(cfg),
                                secret_sentinel=SECRET_SENTINEL)
 
     @app.route("/config/password", methods=["POST"])
     @login_required
     def config_password():
-        import yaml
         config_path = os.environ.get("MEDIACLEANER_CONFIG", "config.yaml")
         new_pass = request.form.get("new_password", "")
         if len(new_pass) < 4:
             return redirect(url_for("config_edit"))
         hashed = bcrypt.hashpw(new_pass.encode(), bcrypt.gensalt()).decode()
-        with open(config_path) as f:
-            raw = yaml.safe_load(f)
-        raw["web"]["admin_password"] = hashed
-        with open(config_path, "w") as f:
-            yaml.dump(raw, f, default_flow_style=False, sort_keys=False)
+        raw = _load_yaml_rt(config_path)
+        raw.setdefault("web", {})["admin_password"] = hashed
+        _save_yaml_rt(config_path, raw)
         cfg["web"]["admin_password"] = hashed
         return redirect(url_for("config_edit"))
 
@@ -1275,17 +1304,55 @@ def create_app() -> Flask:
     return app
 
 
+def _serve_production(app, host, port, cert, key):
+    """Serve the app with cheroot, a production-grade pure-Python WSGI server.
+
+    TLS is terminated in-process via cheroot's BuiltinSSLAdapter when both a
+    certificate and key are configured — keeping MediaDecay a single process
+    with no reverse proxy. cheroot is threaded and single-process, which the app
+    requires: the scheduler thread and the in-process maintenance/background-task
+    state assume exactly one process.
+    """
+    from cheroot import wsgi
+    from cheroot.ssl.builtin import BuiltinSSLAdapter
+
+    server = wsgi.Server((host, port), app, numthreads=8)
+    if cert and key:
+        server.ssl_adapter = BuiltinSSLAdapter(cert, key)
+        log.info(f"Serving with cheroot on https://{host}:{port} (in-process TLS)")
+    else:
+        log.info(f"Serving with cheroot on http://{host}:{port} (no TLS configured)")
+    try:
+        server.start()
+    except KeyboardInterrupt:
+        server.stop()
+
+
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="MediaDecay web UI")
+    parser.add_argument(
+        "--dev", action="store_true",
+        help="Run the Werkzeug development server (auto-reloader/debugger) "
+             "instead of the production cheroot server. Do NOT use in production.",
+    )
+    args = parser.parse_args()
+
     app = create_app()
     cfg = get_config()
-    ssl_ctx = None
+    host = "0.0.0.0"
+    port = cfg["web"].get("port", 9393)
     cert = cfg["web"].get("ssl_cert")
     key = cfg["web"].get("ssl_key")
-    if cert and key:
-        ssl_ctx = (cert, key)
-    # NOTE: For production deployments, use a WSGI server like gunicorn or waitress instead:
-    #   gunicorn -w 1 --threads 4 -b 0.0.0.0:9393 'mediadecay.web.app:create_app()'
-    app.run(host="0.0.0.0", port=cfg["web"].get("port", 9393), ssl_context=ssl_ctx, threaded=True)
+
+    if args.dev:
+        ssl_ctx = (cert, key) if cert and key else None
+        log.warning("Starting Werkzeug DEVELOPMENT server (--dev). "
+                    "Not for production use.")
+        app.run(host=host, port=port, ssl_context=ssl_ctx, threaded=True)
+    else:
+        _serve_production(app, host, port, cert, key)
 
 
 if __name__ == "__main__":

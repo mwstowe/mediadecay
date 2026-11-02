@@ -205,12 +205,17 @@ maintenance:
 
 Gentoo:
 ```bash
-sudo emerge -av flask sqlalchemy pyyaml requests bcrypt PlexAPI
+sudo emerge -av flask sqlalchemy pyyaml ruamel-yaml requests bcrypt PlexAPI cheroot
 ```
+
+`dev-python/PlexAPI` is provided by the `ha-bleeding-edge` overlay; the rest are
+in the main tree. `dev-python/cheroot` is the production WSGI server MediaDecay
+serves with (see Running). `dev-python/ruamel-yaml` lets the web config editor
+save `config.yaml` without discarding comments.
 
 Other systems (pip):
 ```bash
-pip install flask sqlalchemy pyyaml requests bcrypt plexapi
+pip install flask sqlalchemy pyyaml ruamel.yaml requests bcrypt plexapi cheroot
 ```
 
 ### Deploy
@@ -261,6 +266,18 @@ sudo systemctl enable --now mediadecay
 ```
 
 Access the web UI at `https://your-host:9393`.
+
+MediaDecay serves with [cheroot](https://cheroot.cherrypy.dev/), a
+production-grade pure-Python WSGI server, terminating TLS in-process when
+`web.ssl_cert`/`web.ssl_key` are set — no reverse proxy required. It runs as a
+single threaded process, which the scheduler and in-process maintenance lock
+depend on; do not run multiple instances against the same database.
+
+For local development, `--dev` swaps cheroot for Flask's Werkzeug server
+(auto-reloader and debugger). Do not use `--dev` in production:
+```bash
+python3 -m mediadecay.web.app --dev
+```
 
 ### Manual Maintenance
 

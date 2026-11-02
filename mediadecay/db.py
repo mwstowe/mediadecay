@@ -157,19 +157,22 @@ def _migrate():
         _add_col("triggers", "move_to", "VARCHAR", "NULL")
 
         # One-time data migration: Rule.action delete/move -> manage, pushing
-        # move_to down to triggers. Self-neutralizing after the first run.
-        try:
-            existing_rules = [r[1] for r in conn.execute("PRAGMA table_info(rules)").fetchall()]
-            if "move_to" in existing_rules:
-                rows = conn.execute(
-                    "SELECT id, move_to FROM rules WHERE action='move' AND move_to IS NOT NULL"
-                ).fetchall()
-                for rule_id, move_to in rows:
-                    conn.execute("UPDATE triggers SET move_to=?, action='move' WHERE rule_id=?",
-                                 (move_to, rule_id))
-                conn.execute("UPDATE rules SET action='manage' WHERE action IN ('delete', 'move')")
-        except sqlite3.OperationalError as e:
-            log.warning(f"Migration: action/move_to data migration skipped: {e}")
+        # move_to down to triggers. Gated on the version bump below so it runs
+        # exactly once (when upgrading from pre-v1), not on every startup. It is
+        # also self-neutralizing, but gating avoids the redundant table scans.
+        if current < SCHEMA_VERSION:
+            try:
+                existing_rules = [r[1] for r in conn.execute("PRAGMA table_info(rules)").fetchall()]
+                if "move_to" in existing_rules:
+                    rows = conn.execute(
+                        "SELECT id, move_to FROM rules WHERE action='move' AND move_to IS NOT NULL"
+                    ).fetchall()
+                    for rule_id, move_to in rows:
+                        conn.execute("UPDATE triggers SET move_to=?, action='move' WHERE rule_id=?",
+                                     (move_to, rule_id))
+                    conn.execute("UPDATE rules SET action='manage' WHERE action IN ('delete', 'move')")
+            except sqlite3.OperationalError as e:
+                log.warning(f"Migration: action/move_to data migration skipped: {e}")
 
         if current < SCHEMA_VERSION:
             conn.execute("DELETE FROM schema_version")

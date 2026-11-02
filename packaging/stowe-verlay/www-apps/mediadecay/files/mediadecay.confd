@@ -1,0 +1,14 @@
+# /etc/conf.d/mediadecay
+
+# User/group to run as
+#MEDIADECAY_USER="mediadecay"
+#MEDIADECAY_GROUP="mediadecay"
+
+# Path to the configuration file
+#MEDIADECAY_CONFIG="/etc/mediadecay/config.yaml"
+
+# Data directory (holds mediadecay.db)
+#MEDIADECAY_DATADIR="/var/lib/mediadecay"
+
+# Log file
+#MEDIADECAY_LOGFILE="/var/log/mediadecay/mediadecay.log"

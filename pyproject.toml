@@ -1,26 +1,46 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "mediadecay"
-version = "0.1.0"
+version = "1.0.0"
 description = "Media lifecycle management with rule engine, daily maintenance, and web UI"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
-    "flask==3.1.1",
-    "sqlalchemy==2.0.50",
-    "plexapi==4.15.16",
-    "requests==2.32.3",
-    "pyyaml==6.0.2",
-    "bcrypt==4.2.1",
+    "flask>=3.1.1",
+    "sqlalchemy>=2.0.50,<3",
+    "plexapi>=4.15.16",
+    "requests>=2.32.3",
+    "pyyaml>=6.0.2",
+    "ruamel.yaml>=0.18",
+    "bcrypt>=4.2.1",
+    "cheroot>=11.1.2",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest==8.3.4",
-    "ruff==0.8.6",
+    "pytest>=8.3.4",
+    "ruff>=0.8.6",
 ]
 
 [project.scripts]
 mediadecay-web = "mediadecay.web.app:main"
 mediadecay-maintenance = "mediadecay.maintenance:main"
+
+# Explicit package discovery: only ship the application package, never the
+# top-level tests/ or packaging/ directories. Without this, setuptools'
+# flat-layout auto-discovery fails (multiple top-level dirs) and the wheel can
+# omit the web templates/static assets.
+[tool.setuptools.packages.find]
+include = ["mediadecay*"]
+
+# Non-Python assets that must ship inside the wheel for the web UI to work.
+[tool.setuptools.package-data]
+"mediadecay.web" = ["templates/*.html", "static/*"]
 
 [tool.ruff]
 line-length = 100

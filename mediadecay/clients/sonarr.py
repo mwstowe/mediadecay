@@ -222,5 +222,22 @@ def manual_import(series_id: int, files: list[dict]) -> int | None:
 
 
 def get_wanted_series() -> list[dict]:
-    """Get monitored series without all episodes."""
-    return [s for s in get_all_series() if s.get('monitored')]
+    """Get monitored series that are missing one or more episode files.
+
+    Sonarr's series payload carries a `statistics` block with episodeCount
+    (monitored+aired episodes) and episodeFileCount (files on disk). A series is
+    "wanted" when it is monitored and has fewer files than episodes. Series with
+    no statistics yet (just added) are treated as wanted so they aren't hidden.
+    """
+    wanted = []
+    for s in get_all_series():
+        if not s.get("monitored"):
+            continue
+        stats = s.get("statistics") or {}
+        episode_count = stats.get("episodeCount")
+        file_count = stats.get("episodeFileCount")
+        if episode_count is None or file_count is None:
+            wanted.append(s)  # no stats yet — don't hide it
+        elif file_count < episode_count:
+            wanted.append(s)
+    return wanted

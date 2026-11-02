@@ -175,6 +175,72 @@ class EngineReport:
     removed_collections: list[str] = field(default_factory=list)
 
 
+@dataclass
+class MaintenanceResult:
+    """Everything a caller needs to report on a completed maintenance cycle."""
+    report: EngineReport = field(default_factory=EngineReport)
+    activated_rules: list = field(default_factory=list)
+    expired_deletions: list = field(default_factory=list)
+    orphaned_rules: list = field(default_factory=list)
+    incomplete_moves: list = field(default_factory=list)
+
+
+def run_maintenance_cycle(dry_run: bool, scan_orphans: bool = False) -> MaintenanceResult:
+    """Run one full maintenance cycle: the single source of truth for the
+    sequence of operations a maintenance run performs.
+
+    All entry points (scheduler, web UI, CLI) MUST call this so they cannot
+    drift apart — e.g. one path performing moves while another silently skips
+    them. The caller is responsible for acquiring the maintenance lock (so each
+    caller can message lock contention its own way) and for formatting/sending
+    any report from the returned MaintenanceResult.
+
+    Order of operations:
+      1. Surface incomplete moves from a prior crash (before new destructive work)
+      2. Sync managed-media cache from the managers
+      3. Activate pending rules whose media has appeared in Plex
+      4. Evaluate all rules
+      5. (optional) Orphan scan
+      6. Process pending confirmations (cancel/expire)
+      7. If live: execute deletions, then moves
+      8. Clean up orphaned rules
+
+    When dry_run is True, no destructive work (deletions/moves) is performed,
+    but evaluation, pending-confirmation processing (report-only), and
+    orphaned-rule cleanup still run, matching prior scheduler behavior.
+    """
+    result = MaintenanceResult()
+
+    # 1. Incomplete moves from a previous crash — surface before new work.
+    result.incomplete_moves = check_incomplete_moves()
+
+    # 2. Sync managed media cache.
+    sync_managed_media()
+
+    # 3. Activate pending rules whose media has arrived in Plex.
+    result.activated_rules = activate_pending_rules()
+
+    # 4. Evaluate rules.
+    result.report = run_evaluation(dry_run=dry_run)
+
+    # 5. Optional orphan scan (CLI surfaces these in its report).
+    if scan_orphans:
+        result.report.orphans = run_orphan_scan()
+
+    # 6. Process pending confirmations (cancellations / expiries).
+    result.expired_deletions = process_pending_actions(dry_run=dry_run)
+
+    # 7. Execute destructive work only on a live run.
+    if not dry_run:
+        execute_deletions(result.report)
+        execute_moves(result.report)
+
+    # 8. Always clean up orphaned rules.
+    result.orphaned_rules = cleanup_orphaned_rules()
+
+    return result
+
+
 def sync_managed_media():
     """Refresh the managed_media cache from Sonarr, Radarr, and Medusa."""
     now = datetime.now(timezone.utc)
@@ -1787,42 +1853,88 @@ def _remove_empty_shows(report: EngineReport):
 
             # Remove from manager
             manager, manager_id = find_manager_by_rule(rule)
+            removed = False
             try:
                 if manager == "sonarr" and manager_id:
                     sonarr.delete_series(int(manager_id), delete_files=True)
+                    removed = True
                     log.info(f"Removed ended show from Sonarr: {rule.media_title}")
                     session.add(ActionLog(
                         media_title=rule.media_title or f"rule #{rule.id}",
                         plex_rating_key=rule.plex_rating_key,
                         rule_id=rule.id,
                         action_taken="show_removed_ended",
-                        details=f"show ended, removed from Sonarr",
+                        details="show ended, removed from Sonarr",
                     ))
                 elif manager == "medusa" and manager_id:
                     medusa.delete_show(str(manager_id), remove_files=True)
+                    removed = True
                     log.info(f"Removed ended show from Medusa: {rule.media_title}")
                     session.add(ActionLog(
                         media_title=rule.media_title or f"rule #{rule.id}",
                         plex_rating_key=rule.plex_rating_key,
                         rule_id=rule.id,
                         action_taken="show_removed_ended",
-                        details=f"show ended, removed from Medusa",
+                        details="show ended, removed from Medusa",
                     ))
-                session.query(PendingAction).filter_by(rule_id=rule.id, confirmed=False, cancelled=False).update({"cancelled": True})
-                session.delete(rule)
+                if removed:
+                    # Only retire the rule once the show is actually gone from the
+                    # manager. If the manager was unreachable or unmatched
+                    # (manager == "none"), keep the rule so a later run can retry
+                    # — deleting it here would strand the show in the manager with
+                    # no rule to clean it up.
+                    session.query(PendingAction).filter_by(rule_id=rule.id, confirmed=False, cancelled=False).update({"cancelled": True})
+                    session.delete(rule)
+                else:
+                    log.warning(f"Not retiring rule #{rule.id} ({rule.media_title}): "
+                                f"could not resolve a manager to remove the empty show "
+                                f"(manager={manager}). Will retry next run.")
             except Exception as e:
                 log.warning(f"Failed to remove {rule.media_title} from manager: {e}")
 
 
 def find_manager_by_rule(rule: Rule):
-    """Find the manager for a rule's target by checking managed_media."""
-    # Reuse the immutable cache (plain namedtuples) instead of querying ORM rows
-    # and using them after the session closes.
-    managed = _get_managed_media_cache()
-    # Try to match by title since the item may no longer be in Plex
-    for m in managed:
-        if m.title and rule.media_title and m.title.lower() == rule.media_title.lower():
-            return m.manager, m.manager_id
+    """Find the manager for a rule's target.
+
+    Prefers durable external-ID matching (TVDB for Sonarr/Medusa, TMDB for
+    Radarr) because this is used by _remove_empty_shows to remove a show with
+    delete_files=True — matching the wrong show there would delete the wrong
+    files. Two different shows can share a title (e.g. reboots), so title
+    matching alone is unsafe; it is kept only as a fallback when the rule has no
+    stored IDs.
+
+    Returns (manager, manager_id) or ("none", None).
+    """
+    # ID-based matching first. Query managers directly (they are cached with a
+    # short TTL) rather than the managed-media cache, which does not carry IDs.
+    if rule.tvdb_id:
+        try:
+            for s in sonarr.get_all_series():
+                if s.get("tvdbId") == rule.tvdb_id:
+                    return "sonarr", s["id"]
+        except Exception as e:
+            log.warning(f"Sonarr query failed in find_manager_by_rule: {e}")
+        try:
+            for s in medusa.get_all_shows():
+                if s.get("id", {}).get("tvdb") == rule.tvdb_id:
+                    return "medusa", s["id"]["slug"]
+        except Exception as e:
+            log.warning(f"Medusa query failed in find_manager_by_rule: {e}")
+    if rule.tmdb_id:
+        try:
+            for m in radarr.get_all_movies():
+                if m.get("tmdbId") == rule.tmdb_id:
+                    return "radarr", m["id"]
+        except Exception as e:
+            log.warning(f"Radarr query failed in find_manager_by_rule: {e}")
+
+    # Fallback: title match against the managed-media cache. Only reached when
+    # the rule has no stored IDs (older rules created before IDs were captured).
+    if not (rule.tvdb_id or rule.tmdb_id):
+        managed = _get_managed_media_cache()
+        for m in managed:
+            if m.title and rule.media_title and m.title.lower() == rule.media_title.lower():
+                return m.manager, m.manager_id
     return "none", None
 
 
