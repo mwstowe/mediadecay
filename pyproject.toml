@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mediadecay"
-version = "1.0.0"
+version = "1.0.1"
 description = "Media lifecycle management with rule engine, daily maintenance, and web UI"
 readme = "README.md"
 license = "MIT"
