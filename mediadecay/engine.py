@@ -929,6 +929,7 @@ def execute_deletions(report: EngineReport):
             continue
         try:
             is_episode = " - S" in result.title
+            deletion_ok = True
             if is_episode:
                 _delete_episode(result)
                 if result.manager == "medusa" and result.manager_id:
@@ -949,7 +950,19 @@ def execute_deletions(report: EngineReport):
                 _delete_direct(result)
                 ombi.cleanup_for_title(result.title)
             elif result.manager == "none":
-                _delete_direct(result)
+                # Unmanaged: delete straight from disk. _delete_direct returns
+                # False if nothing was actually removed (path validation failed,
+                # file already gone, etc.) — do NOT claim success in that case,
+                # or the same item gets "deleted" every run while it persists.
+                deletion_ok = _delete_direct(result)
+
+            if not deletion_ok:
+                msg = (f"Delete reported no files removed for {result.title} "
+                       f"(manager={result.manager}, key={result.rating_key}); "
+                       f"not logging as deleted — check the warnings above.")
+                log.error(msg)
+                report.errors.append(msg)
+                continue
 
             log.info(f"Deleted: {result.title} via {result.manager}")
             if result.rule_id and not is_episode:
@@ -1938,26 +1951,39 @@ def find_manager_by_rule(rule: Rule):
     return "none", None
 
 
-def _delete_direct(result: EvalResult):
-    """Delete unmanaged media directly from disk with file identity validation."""
+def _delete_direct(result: EvalResult) -> bool:
+    """Delete unmanaged media directly from disk with file identity validation.
+
+    Returns True if at least one file/directory was actually removed, False if
+    nothing was deleted (identity mismatch, unknown roots, path outside roots,
+    already gone, or an error). The caller MUST use the return value to decide
+    whether the deletion truly happened — a False here previously still got
+    logged as a successful delete, causing the same item to be "deleted" every
+    run while the file remained on disk.
+    """
     import os
     import shutil
     server = plex._server()
+    removed_any = False
     try:
         plex_item = server.fetchItem(int(result.rating_key))
         # Validate the item title still matches what we expect
         if result.title and plex_item.title != result.title.split(" - S")[0]:
             log.warning(f"File identity mismatch for ratingKey {result.rating_key}: "
                         f"expected '{result.title}', found '{plex_item.title}'. Skipping deletion.")
-            return
+            return False
         paths = plex.get_file_paths(plex_item)
-        # Validate paths are within known library locations
+        # Validate paths are within known library locations. Normalize BOTH the
+        # candidate path and the library roots with realpath so a symlinked
+        # layout (e.g. /pub -> /data/public) still matches — otherwise the file's
+        # resolved path never starts with an unresolved root and every delete is
+        # silently skipped.
         library_roots = set()
         roots_known = False
         try:
             for section in server.library.sections():
                 for loc in section.locations:
-                    library_roots.add(loc.rstrip("/"))
+                    library_roots.add(os.path.realpath(loc.rstrip("/")))
             roots_known = True
         except Exception as e:
             log.warning(f"Could not enumerate Plex library roots: {e}")
@@ -1966,21 +1992,38 @@ def _delete_direct(result: EvalResult):
         if not roots_known or not library_roots:
             log.warning(f"Refusing direct delete of {result.title}: library roots "
                         f"could not be determined — cannot validate paths are safe.")
-            return
+            return False
         for path in paths:
-            # Safety check: path must be under a known library root
+            # Safety check: resolved path must be under a known (resolved) root.
             path_real = os.path.realpath(path)
             if not any(path_real.startswith(root + "/") or path_real == root for root in library_roots):
-                log.warning(f"Path {path} is not under any known library root. Skipping.")
+                log.warning(f"Path {path} (resolved {path_real}) is not under any "
+                            f"known library root. Skipping.")
                 continue
-            if os.path.isdir(path):
-                shutil.rmtree(path)
-                log.info(f"Removed directory: {path}")
-            elif os.path.exists(path):
-                os.remove(path)
-                log.info(f"Removed file: {path}")
+            if os.path.isdir(path_real):
+                shutil.rmtree(path_real)
+                removed_any = True
+                log.info(f"Removed directory: {path_real}")
+            elif os.path.exists(path_real):
+                os.remove(path_real)
+                removed_any = True
+                log.info(f"Removed file: {path_real}")
+                # Clean up the now-empty containing movie folder, if it sits
+                # under a library root and is empty after the file is gone.
+                parent = os.path.dirname(path_real)
+                try:
+                    if (any(parent.startswith(root + "/") for root in library_roots)
+                            and os.path.isdir(parent) and not os.listdir(parent)):
+                        os.rmdir(parent)
+                        log.info(f"Removed empty folder: {parent}")
+                except OSError:
+                    pass
+            else:
+                log.warning(f"Path already gone, nothing to delete: {path_real}")
     except Exception as e:
         log.warning(f"Could not remove files for {result.title}: {e}")
+        return False
+    return removed_any
 
 
 def _delete_episode(result: EvalResult):
@@ -2238,7 +2281,14 @@ def process_pending_actions(dry_run: bool = False):
                         medusa.delete_show(str(manager_id), remove_files=True)
                         _delete_direct(result)
                     else:
-                        _delete_direct(result)
+                        # Unmanaged — rely solely on the direct delete. If it
+                        # removed nothing, raise so the pending action stays
+                        # unconfirmed and is retried, instead of being marked
+                        # done while the file persists.
+                        if not _delete_direct(result):
+                            raise RuntimeError(
+                                "direct delete removed no files (path validation "
+                                "failed or file already gone)")
                     ombi.cleanup_for_title(pa.media_title)
                     # Deletion succeeded — now record it as confirmed/handled.
                     pa.confirmed = True

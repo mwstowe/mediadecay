@@ -98,6 +98,66 @@ def test_delete_direct_skips_path_outside_roots(db, engine_mod, monkeypatch, tmp
     assert outside.exists(), "path outside known roots must not be deleted"
 
 
+def test_delete_direct_matches_through_symlinked_root(db, engine_mod, monkeypatch, tmp_path):
+    """Regression: when the library path is a symlink (e.g. /pub -> /data/public),
+    the file's realpath must still match the (realpath-normalized) library root.
+    Previously the root was compared un-normalized, so the resolved file path
+    never matched and the delete silently no-op'd — logging success forever."""
+    import os
+    real = tmp_path / "data" / "public" / "video" / "Movies"
+    real.mkdir(parents=True)
+    victim = real / "Coyote.mkv"
+    victim.write_text("data")
+    # Symlinked view: /pub-ish -> .../data/public
+    link = tmp_path / "pub"
+    os.symlink(tmp_path / "data" / "public", link)
+
+    # Plex reports the path and the library root THROUGH the symlink.
+    linked_root = str(link / "video" / "Movies")
+    linked_path = str(link / "video" / "Movies" / "Coyote.mkv")
+
+    item = _FakeItem(title="Coyote", paths=[linked_path])
+    server = _FakeServer(item, [_FakeSection([linked_root])])
+    monkeypatch.setattr(engine_mod.plex, "_server", lambda: server)
+    monkeypatch.setattr(engine_mod.plex, "get_file_paths", lambda it: it._paths)
+
+    ok = engine_mod._delete_direct(_make_result(engine_mod, title="Coyote"))
+
+    assert ok is True, "should report a successful deletion"
+    assert not victim.exists(), "file under a symlinked library root must be deleted"
+
+
+def test_delete_direct_returns_false_on_noop(db, engine_mod, monkeypatch, tmp_path):
+    """The return value must be False when nothing was deleted, so callers don't
+    log a phantom success."""
+    root = tmp_path / "Movies"
+    root.mkdir()
+    outside = tmp_path / "elsewhere.mkv"
+    outside.write_text("data")
+
+    item = _FakeItem(paths=[str(outside)])
+    server = _FakeServer(item, [_FakeSection([str(root)])])
+    monkeypatch.setattr(engine_mod.plex, "_server", lambda: server)
+    monkeypatch.setattr(engine_mod.plex, "get_file_paths", lambda it: it._paths)
+
+    assert engine_mod._delete_direct(_make_result(engine_mod)) is False
+
+
+def test_delete_direct_returns_true_on_success(db, engine_mod, monkeypatch, tmp_path):
+    root = tmp_path / "Movies"
+    root.mkdir()
+    victim = root / "movie.mkv"
+    victim.write_text("data")
+
+    item = _FakeItem(paths=[str(victim)])
+    server = _FakeServer(item, [_FakeSection([str(root)])])
+    monkeypatch.setattr(engine_mod.plex, "_server", lambda: server)
+    monkeypatch.setattr(engine_mod.plex, "get_file_paths", lambda it: it._paths)
+
+    assert engine_mod._delete_direct(_make_result(engine_mod)) is True
+    assert not victim.exists()
+
+
 # --- _remove_empty_shows ---
 
 def _make_show_rule(db, rating_key="42", title="Ended Show"):
