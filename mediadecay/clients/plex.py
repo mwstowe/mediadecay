@@ -114,13 +114,25 @@ def _get_system_accounts():
 
 @_timed_lru_cache(seconds=300)
 def get_manager_info():
-    """Build a lookup of file path -> {managers, ended} from Sonarr, Radarr, Medusa."""
+    """Build a lookup of file path -> {managers, ended} from Sonarr, Radarr, Medusa.
+
+    Keys are realpath-normalized so callers can look up a Plex-reported path
+    (which may come through a symlinked view, e.g. /pub/...) against the
+    manager's resolved path (/data/public/...). Callers must normalize their
+    lookup path the same way (os.path.realpath).
+    """
+    import os
     from mediadecay.clients import sonarr, radarr, medusa
     info = {}
 
+    def _k(p):
+        return os.path.realpath(p).rstrip("/") if p else ""
+
     try:
         for s in sonarr.get_all_series():
-            path = s["path"]
+            path = _k(s["path"])
+            if not path:
+                continue
             info.setdefault(path, {"managers": [], "ended": None})
             info[path]["managers"].append("Sonarr")
             info[path]["ended"] = s.get("ended", s.get("status") == "ended")
@@ -129,7 +141,7 @@ def get_manager_info():
 
     try:
         for m in radarr.get_all_movies():
-            path = m.get("path", "")
+            path = _k(m.get("path", ""))
             if path:
                 info.setdefault(path, {"managers": [], "ended": None})
                 info[path]["managers"].append("Radarr")
@@ -138,7 +150,7 @@ def get_manager_info():
 
     try:
         for s in medusa.get_all_shows():
-            path = s.get("config", {}).get("location", "")
+            path = _k(s.get("config", {}).get("location", ""))
             if path:
                 info.setdefault(path, {"managers": [], "ended": None})
                 info[path]["managers"].append("Medusa")

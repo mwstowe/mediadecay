@@ -650,14 +650,22 @@ def create_app() -> Flask:
             log.warning(f"browse_library({library}): could not reach Plex: {e}")
             flash(f"Could not reach Plex: {e}", "error")
             return redirect(url_for("browse"))
+        import os
         items_data = []
         for i in items:
             viewed_at = getattr(i, "lastViewedAt", None)
             paths = plex_client.get_file_paths(i)
             mgr = None
             for p in paths:
-                if p in mgr_info:
-                    mgr = mgr_info[p]
+                # mgr_info keys are realpath-normalized manager directories;
+                # resolve the Plex path and match it exactly or as a child, so
+                # a symlinked layout (/pub -> /data/public) still resolves.
+                pr = os.path.realpath(p).rstrip("/")
+                for key, val in mgr_info.items():
+                    if pr == key or pr.startswith(key + "/"):
+                        mgr = val
+                        break
+                if mgr:
                     break
             items_data.append({
                 "title": i.title, "rating_key": i.ratingKey, "type": i.type,

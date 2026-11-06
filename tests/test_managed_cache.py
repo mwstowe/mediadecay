@@ -66,6 +66,41 @@ def test_find_manager_prefers_medusa(db, engine_mod, monkeypatch):
     assert manager == "medusa"
 
 
+def test_find_manager_matches_through_symlinked_root(db, engine_mod, monkeypatch, tmp_path):
+    """Regression: Plex reports paths through a symlinked view (/pub/...) while
+    managers store the resolved path (/data/public/...). find_manager must
+    resolve both sides, or managed media is falsely reported as unmanaged
+    (manager='none') — which showed up as spurious 'orphans' and as items being
+    deleted directly from disk instead of through their manager."""
+    import os
+    # Real tree the manager knows about:
+    real = tmp_path / "data" / "public" / "video" / "TV" / "Drunk History"
+    real.mkdir(parents=True)
+    # Symlinked view Plex reports through:
+    os.symlink(tmp_path / "data" / "public", tmp_path / "pub")
+
+    manager_path = str(tmp_path / "data" / "public" / "video" / "TV" / "Drunk History")
+    plex_path = str(tmp_path / "pub" / "video" / "TV" / "Drunk History" / "S01E01.mkv")
+
+    _seed(db, [("Drunk History", manager_path, "sonarr", "112")])
+    engine_mod._invalidate_managed_cache()
+    monkeypatch.setattr(engine_mod.plex, "get_file_paths", lambda item: [plex_path])
+
+    manager, mid = engine_mod.find_manager(object())
+    assert (manager, mid) == ("sonarr", "112"), \
+        "managed item seen through a symlinked path must resolve to its manager"
+
+
+def test_find_manager_none_when_truly_unmanaged(db, engine_mod, monkeypatch, tmp_path):
+    """A real file with no managing app still resolves to 'none' (genuine orphan)."""
+    f = tmp_path / "video" / "Anime" / "Uzumaki"
+    f.mkdir(parents=True)
+    _seed(db, [("Other", str(tmp_path / "video" / "TV" / "Other"), "sonarr", "1")])
+    engine_mod._invalidate_managed_cache()
+    monkeypatch.setattr(engine_mod.plex, "get_file_paths", lambda item: [str(f)])
+    assert engine_mod.find_manager(object()) == ("none", None)
+
+
 def test_invalidate_forces_refresh(db, engine_mod):
     _seed(db, [("One", "/a", "sonarr", "1")])
     assert len(engine_mod._get_managed_media_cache()) == 1

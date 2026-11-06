@@ -21,6 +21,32 @@ from mediadecay import notify
 log = logging.getLogger(__name__)
 
 
+def _norm_path(p: str) -> str:
+    """Normalize a filesystem path for prefix comparison.
+
+    Resolves symlinks with realpath and strips a trailing slash. This is
+    essential because Plex reports media paths through one view of the tree
+    (e.g. /pub/video/...) while Sonarr/Radarr/Medusa report the same files
+    through the resolved location (e.g. /data/public/video/...), when /pub is a
+    symlink to /data/public. Without normalizing both sides, every path-prefix
+    comparison (manager lookup, orphan detection, move routing) silently fails
+    and treats managed media as unmanaged. realpath resolves symlinked leading
+    components whether or not the final path still exists.
+    """
+    import os
+    if not p:
+        return ""
+    return os.path.realpath(p).rstrip("/")
+
+
+def _path_under(path: str, root: str) -> bool:
+    """True if `path` is `root` or lives under it, comparing resolved paths."""
+    np, nr = _norm_path(path), _norm_path(root)
+    if not np or not nr:
+        return False
+    return np == nr or np.startswith(nr + "/")
+
+
 def _wait_for(check_fn, timeout=60, interval=3, desc=""):
     """Poll check_fn() until it returns truthy or timeout. Returns the result or False."""
     import time
@@ -317,14 +343,14 @@ def _is_show_ended(show) -> bool:
     path = paths[0]
     try:
         for s in sonarr.get_all_series():
-            if path.startswith(s["path"]):
+            if _path_under(path, s["path"]):
                 return s.get("ended", s.get("status") == "ended")
     except Exception:
         pass
     try:
         for s in medusa.get_all_shows():
             show_path = s.get("config", {}).get("location", "")
-            if path.startswith(show_path):
+            if show_path and _path_under(path, show_path):
                 return s.get("status", "").lower() == "ended"
     except Exception:
         pass
@@ -391,9 +417,10 @@ def find_manager(item) -> tuple[str, int | None]:
     for m in managed:
         if not m.file_path:
             continue
-        mpath = m.file_path.rstrip("/")
+        # Compare resolved paths so a symlinked layout (Plex sees /pub/...,
+        # managers store /data/public/...) still matches.
         for p in paths:
-            if p.rstrip("/") == mpath or p.startswith(mpath + "/"):
+            if _path_under(p, m.file_path):
                 matches.append((m.manager, m.manager_id))
                 break
 
@@ -1782,22 +1809,21 @@ def _move_medusa_to_medusa(result: EvalResult, dest: str):
 
 def _path_to_manager(path: str) -> str:
     """Determine which manager owns a destination path."""
-    path = path.rstrip("/")
     try:
         for folder in sonarr.get_root_folders():
-            if path.rstrip("/") == folder.rstrip("/") or path.startswith(folder.rstrip("/") + "/"):
+            if _path_under(path, folder):
                 return "sonarr"
     except Exception:
         pass
     try:
         for folder in radarr.get_root_folders():
-            if path.rstrip("/") == folder.rstrip("/") or path.startswith(folder.rstrip("/") + "/"):
+            if _path_under(path, folder):
                 return "radarr"
     except Exception:
         pass
     try:
         for folder in medusa.get_root_folders():
-            if path.rstrip("/") == folder.rstrip("/") or path.startswith(folder.rstrip("/") + "/"):
+            if _path_under(path, folder):
                 return "medusa"
     except Exception:
         pass
